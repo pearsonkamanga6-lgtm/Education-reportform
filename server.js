@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '2.4.1';
+const APP_VERSION = '2.6.0';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');
@@ -367,7 +367,7 @@ function makePracticeSchoolData() {
     }
   }
 
-  const assessment = { id:'assess_practice_t3_2026', name:'Term 3 Practice Assessment 2026', term:'Term 3', year:2026, dueAt:'2026-09-25T16:00:00+02:00', active:true };
+  const assessment = { id:'assess_practice_t3_2026', name:'Term 3 Practice Assessment 2026', term:'Term 3', year:2026, dueAt:'2026-09-25T16:00:00+02:00', active:true, classIds:classes.map(c=>c.id), passMark:50, minPassSubjects:5 };
   const resultSheets = [];
   const notifications = [];
   const demoSubmitted = new Set(['12L|sub_english','12L|sub_mathematics','1L|sub_english','1L|sub_mathematics']);
@@ -408,10 +408,11 @@ function makePracticeSchoolData() {
     school: {
       id:'school_1', name:'Lumezi Boarding Secondary School', motto:'EDUCATION WITH INTEGRITY AND VIRTUE',
       address:'P.O. Box 1, Lumezi', email:'lumeziboarding@edu.zm', demoMode:true,
-      demoNote:'Practice data only — 16 classes, 80 fictional pupils, 9 subjects per pupil with a different teacher for every subject, one official class teacher per class, and complete staff allocations.'
+      demoNote:'Practice data only — 16 classes, 80 fictional pupils, 9 subjects per pupil with a different teacher for every subject, one official class teacher per class, and complete staff allocations.',
+      repeatPolicy:{ passMark:50, minPassSubjects:5 }
     },
     users, departments, classes, subjects, assessments:[assessment], teachingAssignments, pupils, resultSheets,
-    notifications, escalations:[], reportReleaseApprovals:[], reportSendLog:[],
+    notifications, escalations:[], reportReleaseApprovals:[], reportSendLog:[], teachingClaims:[], resultMessages:[],
     auditLog:[{id:id('audit'),at:nowIso(),actorUserId:admin.id,action:'PRACTICE_SCHOOL_CREATED',detail:'Lumezi practice school: 16 classes, 80 fictional pupils, 9 different subject teachers per pupil, 16 class teachers, all teaching staff allocated'}]
   };
 }
@@ -429,12 +430,14 @@ function migrateData(raw) {
   db.school.email ||= 'lumeziboarding@edu.zm';
   db.users ||= []; db.departments ||= []; db.classes ||= []; db.subjects ||= [];
   db.assessments ||= []; db.teachingAssignments ||= []; db.pupils ||= []; db.resultSheets ||= [];
-  db.notifications ||= []; db.escalations ||= []; db.reportReleaseApprovals ||= []; db.reportSendLog ||= []; db.auditLog ||= [];
-  db.users.forEach(u => { if (u.phone === undefined) u.phone = ''; if (u.active === undefined) u.active = true; });
+  db.notifications ||= []; db.escalations ||= []; db.reportReleaseApprovals ||= []; db.reportSendLog ||= []; db.teachingClaims ||= []; db.resultMessages ||= []; db.auditLog ||= [];
+  db.school.repeatPolicy ||= { passMark:50, minPassSubjects:5 };
+  db.users.forEach(u => { if (u.phone === undefined) u.phone = ''; if (u.active === undefined) u.active = true; u.profileSetupComplete = !!u.profileSetupComplete || db.teachingAssignments.some(a=>a.teacherUserId===u.id); });
   db.classes.forEach(c => { c.gradingSystem = c.gradingSystem === 'CBC' ? 'CBC' : 'LEGACY'; if (c.active === undefined) c.active = true; });
+  db.assessments.forEach(a => { a.classIds ||= []; if (a.passMark == null) a.passMark = Number(db.school.repeatPolicy.passMark || 50); if (a.minPassSubjects == null) a.minPassSubjects = Number(db.school.repeatPolicy.minPassSubjects || 5); });
   db.pupils.forEach(p => { if (p.isRepeater === undefined) p.isRepeater = false; p.parentAltPhones ||= []; p.subjectIds ||= []; p.subjectTrack ||= ''; if (p.active === undefined) p.active = true; });
   db.resultSheets.forEach(s => {
-    s.marks ||= {}; s.markStates ||= {};
+    s.marks ||= {}; s.markStates ||= {}; s.markNotes ||= {}; s.revision = Number(s.revision || 0);
     for (const pupilId of Object.keys(s.marks)) if (!s.markStates[pupilId]) s.markStates[pupilId] = 'PRESENT';
     if (s.deadlineOverride === undefined) s.deadlineOverride = null;
   });
@@ -565,7 +568,7 @@ function ensureSheet(assignment, assessmentId, actorUserId) {
   if (!sheet) {
     sheet = {
       id: id('sheet'), assignmentId: assignment.id, assessmentId,
-      status: 'NOT_STARTED', marks: {}, markStates: {}, deadlineOverride: null,
+      status: 'NOT_STARTED', marks: {}, markStates: {}, markNotes: {}, revision:0, deadlineOverride: null,
       updatedAt: null, submittedAt: null, enteredByUserId: actorUserId, source: 'Teacher entry'
     };
     db.resultSheets.push(sheet);
@@ -596,6 +599,85 @@ function assignmentView(a) {
   const teacher = db.users.find(u => u.id === a.teacherUserId);
   const dept = db.departments.find(d => d.id === subject?.departmentId);
   return { ...a, className: cls?.name || '', classLevel: cls?.level || '', subjectName: subject?.name || '', teacherName: teacher?.name || '', departmentId: dept?.id || null, departmentName: dept?.name || '' };
+}
+
+
+function assessmentAppliesToClass(assessment, classId) {
+  if (!assessment || assessment.active === false) return false;
+  const ids = Array.isArray(assessment.classIds) ? assessment.classIds : [];
+  return ids.length === 0 || ids.includes(classId);
+}
+
+function pupilTakesSubject(pupil, subjectId) {
+  const ids = Array.isArray(pupil?.subjectIds) ? pupil.subjectIds : [];
+  return ids.length === 0 || ids.includes(subjectId);
+}
+
+function requiredSubjectIdsForPupil(pupil) {
+  if (Array.isArray(pupil?.subjectIds) && pupil.subjectIds.length) return [...new Set(pupil.subjectIds)];
+  return [...new Set(db.teachingAssignments.filter(a => a.classId === pupil.classId && a.active !== false).map(a => a.subjectId))];
+}
+
+function pupilReportReadiness(pupil, assessmentId) {
+  const requiredSubjectIds = requiredSubjectIdsForPupil(pupil);
+  const missing = [];
+  let received = 0;
+  for (const subjectId of requiredSubjectIds) {
+    const assignment = db.teachingAssignments.find(a => a.classId === pupil.classId && a.subjectId === subjectId && a.active !== false);
+    if (!assignment) { missing.push({subjectId, subjectName:db.subjects.find(s=>s.id===subjectId)?.name || subjectId, reason:'No teacher assigned'}); continue; }
+    const sheet = findSheet(assignment.id, assessmentId);
+    if (!sheetIsVisible(sheet)) missing.push(assignmentView(assignment));
+    else received++;
+  }
+  const release = findRelease(pupil.classId, assessmentId);
+  const finalReady = requiredSubjectIds.length > 0 && missing.length === 0;
+  const provisionalAllowed = !!release?.provisionalAllowed;
+  return { totalSubjects:requiredSubjectIds.length, submittedSubjects:received, missingSubjects:missing, finalReady, provisionalAllowed, provisional:!finalReady && provisionalAllowed, canSend:finalReady || provisionalAllowed, approval:release || null };
+}
+
+function repeatPolicyForAssessment(assessment) {
+  const base = db.school?.repeatPolicy || { passMark:50, minPassSubjects:5 };
+  return {
+    passMark:Number(assessment?.passMark ?? base.passMark ?? 50),
+    minPassSubjects:Number(assessment?.minPassSubjects ?? base.minPassSubjects ?? 5)
+  };
+}
+
+function analyzeRepeatPolicy(assessment) {
+  const policy = repeatPolicyForAssessment(assessment);
+  const applicableClassIds = new Set((Array.isArray(assessment?.classIds) && assessment.classIds.length) ? assessment.classIds : db.classes.filter(c=>c.active!==false).map(c=>c.id));
+  const rows = [];
+  for (const pupil of db.pupils.filter(p=>p.active!==false && applicableClassIds.has(p.classId))) {
+    const cls = db.classes.find(c=>c.id===pupil.classId);
+    const required = requiredSubjectIdsForPupil(pupil);
+    let passed=0, failed=0, pending=0, absent=0;
+    const below=[]; const missing=[];
+    for (const subjectId of required) {
+      const subject = db.subjects.find(s=>s.id===subjectId);
+      const assignment = db.teachingAssignments.find(a=>a.classId===pupil.classId && a.subjectId===subjectId && a.active!==false);
+      if (!assignment) { pending++; missing.push(subject?.name || subjectId); continue; }
+      const sheet=findSheet(assignment.id, assessment.id);
+      if (!sheetIsVisible(sheet)) { pending++; missing.push(subject?.name || subjectId); continue; }
+      const state=stateForPupil(sheet,pupil.id); const mark=sheet.marks?.[pupil.id];
+      if (state==='PRESENT' && Number.isFinite(Number(mark))) {
+        if (Number(mark) >= policy.passMark) passed++; else { failed++; below.push({subjectId,subjectName:subject?.name||subjectId,mark:Number(mark)}); }
+      } else if (state==='ABSENT') { absent++; failed++; }
+      else if (state==='NOT_TAKING') { /* not required in authoritative enrolment, ignore defensive mismatch */ }
+      else { pending++; missing.push(subject?.name || subjectId); }
+    }
+    let repeatStatus='PENDING';
+    if (passed >= policy.minPassSubjects) repeatStatus='CLEAR';
+    else if (passed + pending < policy.minPassSubjects) repeatStatus='REVIEW';
+    else if (pending===0) repeatStatus='REVIEW';
+    rows.push({ pupilId:pupil.id, pupilName:pupil.name, classId:pupil.classId, className:cls?.name||'', passedSubjects:passed, failedSubjects:failed, absentSubjects:absent, pendingSubjects:pending, requiredSubjects:required.length, belowPassMark:below, missingSubjects:missing, repeatStatus, isRepeater:!!pupil.isRepeater });
+  }
+  const rank={REVIEW:0,PENDING:1,CLEAR:2};
+  rows.sort((a,b)=>rank[a.repeatStatus]-rank[b.repeatStatus] || a.className.localeCompare(b.className) || a.pupilName.localeCompare(b.pupilName));
+  return { policy, rows, counts:{ review:rows.filter(r=>r.repeatStatus==='REVIEW').length, pending:rows.filter(r=>r.repeatStatus==='PENDING').length, clear:rows.filter(r=>r.repeatStatus==='CLEAR').length, subjectWarnings:rows.filter(r=>r.belowPassMark.length).length } };
+}
+
+function canAccessResultConversation(user, assignment) {
+  return canReadSubmittedAssignment(user, assignment) || assignment?.teacherUserId === user?.id;
 }
 
 function canViewClass(user, classId) {
@@ -654,7 +736,8 @@ function findRelease(classId, assessmentId) {
 }
 
 function reportReadiness(classId, assessmentId) {
-  const assignments = db.teachingAssignments.filter(a => a.classId === classId && a.active !== false);
+  const classPupils = db.pupils.filter(p=>p.classId===classId && p.active!==false);
+  const assignments = db.teachingAssignments.filter(a => a.classId === classId && a.active !== false && classPupils.some(p=>pupilTakesSubject(p,a.subjectId)));
   const missing = [];
   for (const a of assignments) {
     const sheet = findSheet(a.id, assessmentId);
@@ -679,6 +762,44 @@ function resultRowForPupil(sheet, pupilId) {
   if (!sheet || !sheetIsVisible(sheet)) return { mark: null, state: 'PENDING' };
   const mark = sheet.marks?.[pupilId] ?? null;
   return { mark, state: stateForPupil(sheet, pupilId) };
+}
+
+function canReadSubmittedAssignment(user, assignment) {
+  if (!user || !assignment) return false;
+  if (assignment.teacherUserId === user.id) return true;
+  if (isAdminOrHead(user)) return true;
+  const cls = db.classes.find(c => c.id === assignment.classId && c.active !== false);
+  if (cls?.classTeacherUserId === user.id) return true;
+  const subject = db.subjects.find(s => s.id === assignment.subjectId && s.active !== false);
+  const dept = db.departments.find(d => d.id === subject?.departmentId);
+  if (hasRole(user, 'HOD') && (dept?.hodUserId === user.id || belongsToDepartment(user, subject?.departmentId))) return true;
+  return false;
+}
+
+function practiceMark(assignmentIndex, pupilIndex) {
+  return 45 + ((assignmentIndex * 13 + pupilIndex * 7) % 48); // 45–92
+}
+
+function setPracticeSheetData(assignment, assessment, assignmentIndex, mode) {
+  const sheet = ensureSheet(assignment, assessment.id, assignment.teacherUserId);
+  const pupils = db.pupils.filter(p => p.classId === assignment.classId && p.active !== false);
+  const marks = {}; const markStates = {};
+  if (mode === 'NOT_STARTED') {
+    sheet.status = 'NOT_STARTED'; sheet.marks = {}; sheet.markStates = {}; sheet.updatedAt = null; sheet.submittedAt = null;
+    sheet.enteredByUserId = assignment.teacherUserId; sheet.source = 'Practice simulator';
+    return sheet;
+  }
+  pupils.forEach((p, pi) => {
+    const takes = Array.isArray(p.subjectIds) ? p.subjectIds.includes(assignment.subjectId) : true;
+    if (!takes) { markStates[p.id] = 'NOT_TAKING'; return; }
+    if (mode === 'DRAFT' && pi >= 2) { markStates[p.id] = 'PENDING'; return; }
+    marks[p.id] = practiceMark(assignmentIndex, pi);
+    markStates[p.id] = 'PRESENT';
+  });
+  sheet.marks = marks; sheet.markStates = markStates; sheet.updatedAt = nowIso(); sheet.enteredByUserId = assignment.teacherUserId; sheet.source = 'Practice simulator';
+  if (mode === 'SUBMITTED') { sheet.status = 'SUBMITTED'; sheet.submittedAt = nowIso(); }
+  else { sheet.status = 'DRAFT'; sheet.submittedAt = null; }
+  return sheet;
 }
 
 async function api(req, res, urlObj) {
@@ -749,8 +870,149 @@ async function api(req, res, urlObj) {
     return sendJson(res, 200, { user: safeUser(user), school: db.school, classTeacherClasses, hodDepartment: getDepartmentForHod(user) });
   }
 
+
+  if (req.method === 'GET' && pathname === '/api/profile/options') {
+    const assignments = db.teachingAssignments.filter(a=>a.active!==false && a.teacherUserId===user.id).map(assignmentView);
+    const classTeacherClasses = db.classes.filter(c=>c.active!==false && c.classTeacherUserId===user.id).map(c=>({id:c.id,name:c.name,level:c.level}));
+    const claims = db.teachingClaims.filter(c=>c.userId===user.id).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+    return sendJson(res,200,{ user:safeUser(user), classes:db.classes.filter(c=>c.active!==false), subjects:db.subjects.filter(s=>s.active!==false), assignments, classTeacherClasses, claims });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/profile/phone') {
+    const body=await readJson(req); user.phone=String(body.phone||'').trim().slice(0,40); user.profileSetupComplete=true;
+    audit(user.id,'STAFF_PHONE_UPDATED',user.phone?'Phone saved':'Phone cleared'); saveData();
+    return sendJson(res,200,{user:safeUser(user)});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/profile/claims') {
+    if (!hasRole(user,'TEACHER')) return sendError(res,403,'Teacher access required');
+    const body=await readJson(req); const requested=[];
+    user.phone=String(body.phone ?? user.phone ?? '').trim().slice(0,40); user.profileSetupComplete=true;
+    const rows=Array.isArray(body.assignments)?body.assignments:[];
+    for (const row of rows.slice(0,40)) {
+      const cls=db.classes.find(c=>c.id===row.classId&&c.active!==false); const subject=db.subjects.find(s=>s.id===row.subjectId&&s.active!==false);
+      if (!cls||!subject) continue;
+      const existingApproved=db.teachingAssignments.find(a=>a.classId===cls.id&&a.subjectId===subject.id&&a.active!==false&&a.teacherUserId===user.id);
+      if (existingApproved) continue;
+      const existing=db.teachingClaims.find(c=>c.userId===user.id&&c.type==='SUBJECT'&&c.classId===cls.id&&c.subjectId===subject.id&&c.status==='PENDING');
+      if (existing) { requested.push(existing); continue; }
+      const claim={id:id('claim'),userId:user.id,type:'SUBJECT',classId:cls.id,subjectId:subject.id,status:'PENDING',createdAt:nowIso(),decidedAt:null,decidedByUserId:null,note:''}; db.teachingClaims.unshift(claim); requested.push(claim);
+      const dept=db.departments.find(d=>d.id===subject.departmentId); createNotification(dept?.hodUserId,'TEACHING_CLAIM',`Teaching claim: ${cls.name} ${subject.name}`,`${user.name} says they teach ${subject.name} in ${cls.name}. Approve or decline the claim.`,{claimId:claim.id});
+    }
+    if (body.classTeacherClassId) {
+      const cls=db.classes.find(c=>c.id===body.classTeacherClassId&&c.active!==false);
+      if (cls && cls.classTeacherUserId!==user.id && !db.teachingClaims.some(c=>c.userId===user.id&&c.type==='CLASS_TEACHER'&&c.classId===cls.id&&c.status==='PENDING')) {
+        const claim={id:id('claim'),userId:user.id,type:'CLASS_TEACHER',classId:cls.id,subjectId:null,status:'PENDING',createdAt:nowIso(),decidedAt:null,decidedByUserId:null,note:''}; db.teachingClaims.unshift(claim); requested.push(claim);
+        createNotification(db.users.filter(u=>hasRole(u,'ADMIN')||hasRole(u,'HEAD')).map(u=>u.id),'CLASS_TEACHER_CLAIM',`Class teacher claim: ${cls.name}`,`${user.name} says they are the class teacher for ${cls.name}.`,{claimId:claim.id});
+      }
+    }
+    audit(user.id,'TEACHING_PROFILE_SUBMITTED',`${requested.length} claim(s)`); saveData();
+    return sendJson(res,201,{claims:requested,user:safeUser(user)});
+  }
+
+  if (req.method === 'GET' && pathname === '/api/hod/claims') {
+    const dept=getDepartmentForHod(user); if(!dept) return sendError(res,403,'HOD access required');
+    const rows=db.teachingClaims.filter(c=>c.type==='SUBJECT').map(c=>{
+      const subject=db.subjects.find(s=>s.id===c.subjectId); if(subject?.departmentId!==dept.id) return null;
+      const cls=db.classes.find(x=>x.id===c.classId); const claimant=db.users.find(x=>x.id===c.userId);
+      return {...c,className:cls?.name||'',subjectName:subject?.name||'',teacherName:claimant?.name||'',teacherPhone:claimant?.phone||''};
+    }).filter(Boolean).sort((a,b)=>(a.status==='PENDING'?0:1)-(b.status==='PENDING'?0:1)||new Date(b.createdAt)-new Date(a.createdAt));
+    return sendJson(res,200,{department:dept,claims:rows});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/hod/claim-decision') {
+    const dept=getDepartmentForHod(user); if(!dept) return sendError(res,403,'HOD access required');
+    const body=await readJson(req); const claim=db.teachingClaims.find(c=>c.id===body.claimId&&c.type==='SUBJECT');
+    if(!claim) return sendError(res,404,'Teaching claim not found'); const subject=db.subjects.find(s=>s.id===claim.subjectId);
+    if(subject?.departmentId!==dept.id) return sendError(res,403,'This claim is outside your department');
+    if(claim.status!=='PENDING') return sendError(res,409,'This claim has already been decided');
+    const approve=!!body.approve; claim.status=approve?'APPROVED':'DECLINED'; claim.decidedAt=nowIso(); claim.decidedByUserId=user.id; claim.note=String(body.note||'').trim();
+    if(approve){
+      const conflict=db.teachingAssignments.find(a=>a.classId===claim.classId&&a.subjectId===claim.subjectId&&a.active!==false&&a.teacherUserId!==claim.userId);
+      if(conflict){ claim.status='PENDING'; claim.decidedAt=null; claim.decidedByUserId=null; return sendError(res,409,`This class/subject is already assigned to ${assignmentView(conflict).teacherName}. Resolve that assignment first.`); }
+      let a=db.teachingAssignments.find(a=>a.classId===claim.classId&&a.subjectId===claim.subjectId&&a.active!==false);
+      if(a) a.teacherUserId=claim.userId; else { a={id:id('ta'),classId:claim.classId,subjectId:claim.subjectId,teacherUserId:claim.userId,active:true}; db.teachingAssignments.push(a); }
+    }
+    const teacher=db.users.find(u=>u.id===claim.userId); const cls=db.classes.find(c=>c.id===claim.classId);
+    createNotification(claim.userId,'TEACHING_CLAIM_DECISION',approve?'Teaching claim approved':'Teaching claim declined',`${subject?.name||'Subject'} • ${cls?.name||'Class'}${claim.note?` — ${claim.note}`:''}`,{claimId:claim.id});
+    audit(user.id,approve?'TEACHING_CLAIM_APPROVED':'TEACHING_CLAIM_DECLINED',claim.id); saveData();
+    return sendJson(res,200,{claim,teacher:safeUser(teacher)});
+  }
+
+  if (req.method === 'GET' && pathname === '/api/admin/class-teacher-claims') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required');
+    const rows=db.teachingClaims.filter(c=>c.type==='CLASS_TEACHER').map(c=>({...c,className:db.classes.find(x=>x.id===c.classId)?.name||'',teacherName:db.users.find(x=>x.id===c.userId)?.name||'',teacherPhone:db.users.find(x=>x.id===c.userId)?.phone||''})).sort((a,b)=>(a.status==='PENDING'?0:1)-(b.status==='PENDING'?0:1)||new Date(b.createdAt)-new Date(a.createdAt));
+    return sendJson(res,200,{claims:rows});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/class-teacher-claim-decision') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required');
+    const body=await readJson(req); const claim=db.teachingClaims.find(c=>c.id===body.claimId&&c.type==='CLASS_TEACHER'); if(!claim) return sendError(res,404,'Class teacher claim not found');
+    if(claim.status!=='PENDING') return sendError(res,409,'This claim has already been decided'); const approve=!!body.approve; const cls=db.classes.find(c=>c.id===claim.classId);
+    claim.status=approve?'APPROVED':'DECLINED'; claim.decidedAt=nowIso(); claim.decidedByUserId=user.id; claim.note=String(body.note||'').trim();
+    if(approve && cls){ const old=cls.classTeacherUserId; cls.classTeacherUserId=claim.userId; if(old&&old!==claim.userId) createNotification(old,'CLASS_TEACHER_CHANGED','Class teacher assignment changed',`You are no longer the class teacher for ${cls.name}.`,{classId:cls.id}); }
+    createNotification(claim.userId,'CLASS_TEACHER_CLAIM_DECISION',approve?'Class teacher claim approved':'Class teacher claim declined',`${cls?.name||'Class'}${claim.note?` — ${claim.note}`:''}`,{claimId:claim.id});
+    audit(user.id,approve?'CLASS_TEACHER_CLAIM_APPROVED':'CLASS_TEACHER_CLAIM_DECLINED',claim.id); saveData(); broadcastEvent({type:'CLASS_TEACHER_UPDATED',classId:claim.classId,teacherUserId:approve?claim.userId:null},[claim.userId]);
+    return sendJson(res,200,{claim});
+  }
+
+  if (req.method === 'GET' && pathname === '/api/result-messages') {
+    const assignmentId=urlObj.searchParams.get('assignmentId'); const assessmentId=urlObj.searchParams.get('assessmentId'); const assignment=db.teachingAssignments.find(a=>a.id===assignmentId&&a.active!==false);
+    if(!assignment||!canAccessResultConversation(user,assignment)) return sendError(res,403,'You do not have access to this result conversation');
+    const pupilId=urlObj.searchParams.get('pupilId')||'';
+    const rows=db.resultMessages.filter(m=>m.assignmentId===assignmentId&&m.assessmentId===assessmentId&&(!pupilId||m.pupilId===pupilId)).map(m=>({...m,fromName:db.users.find(u=>u.id===m.fromUserId)?.name||'Staff'})).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt));
+    return sendJson(res,200,{messages:rows});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/result-messages') {
+    const body=await readJson(req); const assignment=db.teachingAssignments.find(a=>a.id===body.assignmentId&&a.active!==false); if(!assignment||!canAccessResultConversation(user,assignment)) return sendError(res,403,'You do not have access to this result conversation');
+    const text=String(body.text||'').trim().slice(0,1000); if(!text) return sendError(res,400,'Write a short message first'); const pupilId=String(body.pupilId||'');
+    const msg={id:id('msg'),assignmentId:assignment.id,assessmentId:String(body.assessmentId||''),pupilId,fromUserId:user.id,text,createdAt:nowIso(),resolved:false}; db.resultMessages.push(msg);
+    const cls=db.classes.find(c=>c.id===assignment.classId); const recipientIds=[assignment.teacherUserId,cls?.classTeacherUserId].filter(uid=>uid&&uid!==user.id);
+    createNotification(recipientIds,'RESULT_MESSAGE',`Result question: ${assignmentView(assignment).className} ${assignmentView(assignment).subjectName}`,`${user.name}: ${text}`,{assignmentId:assignment.id,assessmentId:msg.assessmentId,pupilId});
+    audit(user.id,'RESULT_MESSAGE_SENT',assignment.id); saveData(); return sendJson(res,201,{message:{...msg,fromName:user.name}});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/report-release/request') {
+    const body=await readJson(req); const cls=db.classes.find(c=>c.id===body.classId&&c.active!==false); if(!cls||cls.classTeacherUserId!==user.id) return sendError(res,403,'Only the class teacher can request incomplete-report release');
+    const assessment=db.assessments.find(a=>a.id===body.assessmentId&&a.active!==false); if(!assessment) return sendError(res,404,'Assessment not found');
+    const readiness=reportReadiness(cls.id,assessment.id); if(readiness.finalReady) return sendError(res,409,'All subjects are already complete; approval is not required');
+    let release=findRelease(cls.id,assessment.id); if(!release){release={id:id('release'),classId:cls.id,assessmentId:assessment.id};db.reportReleaseApprovals.push(release);} release.status='REQUESTED'; release.provisionalAllowed=false; release.requestedAt=nowIso(); release.requestedByUserId=user.id; release.requestReason=String(body.reason||'').trim(); release.missingSnapshot=readiness.missingSubjects.map(x=>x.subjectName);
+    createNotification(db.users.filter(u=>hasRole(u,'ADMIN')||hasRole(u,'HEAD')).map(u=>u.id),'REPORT_RELEASE_REQUEST',`Incomplete report approval: ${cls.name}`,`${user.name} requests permission to send ${assessment.name} reports with ${readiness.submittedSubjects}/${readiness.totalSubjects} subjects received.`,{releaseId:release.id,classId:cls.id,assessmentId:assessment.id});
+    audit(user.id,'REPORT_RELEASE_REQUESTED',`${cls.name}/${assessment.name}`); saveData(); return sendJson(res,201,{release});
+  }
+
+  if (req.method === 'GET' && pathname === '/api/report-release/requests') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required');
+    const rows=db.reportReleaseApprovals.map(r=>({...r,className:db.classes.find(c=>c.id===r.classId)?.name||'',assessmentName:db.assessments.find(a=>a.id===r.assessmentId)?.name||'',requestedByName:db.users.find(u=>u.id===r.requestedByUserId)?.name||'',approvedByName:db.users.find(u=>u.id===r.approvedByUserId)?.name||''})).sort((a,b)=>(a.status==='REQUESTED'?0:1)-(b.status==='REQUESTED'?0:1)||new Date(b.requestedAt||b.approvedAt||0)-new Date(a.requestedAt||a.approvedAt||0));
+    return sendJson(res,200,{requests:rows});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/report-release/decision') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const body=await readJson(req); const release=db.reportReleaseApprovals.find(r=>r.id===body.releaseId); if(!release) return sendError(res,404,'Release request not found');
+    const approve=!!body.approve; release.status=approve?'APPROVED':'DECLINED'; release.provisionalAllowed=approve; release.approvedAt=nowIso(); release.approvedByUserId=user.id; release.reason=String(body.reason||'').trim(); const cls=db.classes.find(c=>c.id===release.classId); const assessment=db.assessments.find(a=>a.id===release.assessmentId);
+    createNotification(cls?.classTeacherUserId,'REPORT_RELEASE_DECISION',approve?'Incomplete reports approved':'Incomplete reports not approved',`${assessment?.name||'Assessment'} • ${cls?.name||'Class'}${release.reason?` — ${release.reason}`:''}`,{releaseId:release.id}); audit(user.id,approve?'REPORT_RELEASE_APPROVED':'REPORT_RELEASE_DECLINED',release.id); saveData(); return sendJson(res,200,{release});
+  }
+
+  if (req.method === 'GET' && pathname === '/api/admin/repeat-policy') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const assessmentId=urlObj.searchParams.get('assessmentId')||db.assessments.find(a=>a.active!==false)?.id; const assessment=db.assessments.find(a=>a.id===assessmentId&&a.active!==false); if(!assessment) return sendError(res,404,'Assessment not found');
+    return sendJson(res,200,{assessment,...analyzeRepeatPolicy(assessment)});
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/repeat-policy') {
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const body=await readJson(req); const assessment=db.assessments.find(a=>a.id===body.assessmentId&&a.active!==false); if(!assessment) return sendError(res,404,'Assessment not found'); const passMark=Number(body.passMark), minPassSubjects=Number(body.minPassSubjects); if(!Number.isFinite(passMark)||passMark<0||passMark>100||!Number.isInteger(minPassSubjects)||minPassSubjects<1||minPassSubjects>20) return sendError(res,400,'Enter a valid pass mark and minimum number of subjects'); assessment.passMark=passMark; assessment.minPassSubjects=minPassSubjects; db.school.repeatPolicy={passMark,minPassSubjects}; audit(user.id,'REPEAT_POLICY_UPDATED',`${assessment.name}: ${passMark}% in ${minPassSubjects} subjects`); saveData(); return sendJson(res,200,{assessment,policy:repeatPolicyForAssessment(assessment)});
+  }
+
   if (req.method === 'GET' && pathname === '/api/assessments') {
-    return sendJson(res, 200, { assessments: db.assessments.filter(a => a.active !== false).sort((a, b) => new Date(b.dueAt) - new Date(a.dueAt)) });
+    let assessments=db.assessments.filter(a=>a.active!==false);
+    if(!isAdminOrHead(user) && !hasRole(user,'HOD')){
+      const classIds=new Set([
+        ...db.teachingAssignments.filter(a=>a.active!==false&&a.teacherUserId===user.id).map(a=>a.classId),
+        ...db.classes.filter(c=>c.active!==false&&c.classTeacherUserId===user.id).map(c=>c.id)
+      ]);
+      assessments=assessments.filter(a=>{const ids=Array.isArray(a.classIds)?a.classIds:[];return ids.length===0||ids.some(id=>classIds.has(id));});
+    }
+    return sendJson(res, 200, { assessments: assessments.sort((a, b) => new Date(b.dueAt) - new Date(a.dueAt)) });
   }
 
   if (req.method === 'GET' && pathname === '/api/notifications') {
@@ -769,7 +1031,7 @@ async function api(req, res, urlObj) {
     const own = db.teachingAssignments.filter(a => a.active !== false && a.teacherUserId === user.id);
     const reminders = [];
     for (const assignment of own) {
-      for (const assessment of db.assessments.filter(a => a.active !== false)) {
+      for (const assessment of db.assessments.filter(a => a.active !== false && assessmentAppliesToClass(a, assignment.classId))) {
         const sheet = findSheet(assignment.id, assessment.id); const status = sheet?.status || 'NOT_STARTED';
         if (['SUBMITTED', 'LOCKED', 'CORRECTION_REQUESTED'].includes(status)) continue;
         reminders.push({ assignment: assignmentView(assignment), assessment, status, deadline: getDeadlineState(assessment, status, sheet) });
@@ -782,7 +1044,7 @@ async function api(req, res, urlObj) {
   if (req.method === 'GET' && pathname === '/api/teacher/assignments') {
     if (!hasRole(user, 'TEACHER')) return sendError(res, 403, 'Teacher access required');
     const assignments = db.teachingAssignments.filter(a => a.active !== false && a.teacherUserId === user.id).map(a => {
-      const sheets = db.assessments.filter(x => x.active !== false).map(assessment => {
+      const sheets = db.assessments.filter(x => x.active !== false && assessmentAppliesToClass(x, a.classId)).map(assessment => {
         const sheet = findSheet(a.id, assessment.id); const status = sheet?.status || 'NOT_STARTED';
         const pupilCount = db.pupils.filter(p => p.classId === a.classId && p.active !== false).length;
         const entered = sheet ? Object.keys(sheet.marks || {}).length : 0;
@@ -799,11 +1061,12 @@ async function api(req, res, urlObj) {
     if (!assignment || assignment.teacherUserId !== user.id) return sendError(res, 403, 'You can only open subjects assigned to you');
     const assessment = db.assessments.find(a => a.id === assessmentId && a.active !== false);
     if (!assessment) return sendError(res, 404, 'Assessment not found');
-    const pupils = db.pupils.filter(p => p.classId === assignment.classId && p.active !== false).map(p => ({ id: p.id, name: p.name, sex: p.sex, examNo: p.examNo || '', isRepeater: !!p.isRepeater }));
+    if (!assessmentAppliesToClass(assessment, assignment.classId)) return sendError(res, 403, 'This assessment is not assigned to this class');
+    const pupils = db.pupils.filter(p => p.classId === assignment.classId && p.active !== false).map(p => ({ id: p.id, name: p.name, sex: p.sex, examNo: p.examNo || '', isRepeater: !!p.isRepeater, takesSubject:pupilTakesSubject(p, assignment.subjectId) }));
     const sheet = ensureSheet(assignment, assessmentId, user.id);
     return sendJson(res, 200, {
       assignment: assignmentView(assignment), assessment,
-      sheet: { id: sheet.id, status: sheet.status, marks: sheet.marks || {}, markStates: sheet.markStates || {}, updatedAt: sheet.updatedAt, submittedAt: sheet.submittedAt, deadline: getDeadlineState(assessment, sheet.status, sheet) },
+      sheet: { id: sheet.id, status: sheet.status, marks: sheet.marks || {}, markStates: sheet.markStates || {}, markNotes:sheet.markNotes || {}, revision:Number(sheet.revision||0), updatedAt: sheet.updatedAt, submittedAt: sheet.submittedAt, deadline: getDeadlineState(assessment, sheet.status, sheet) },
       pupils
     });
   }
@@ -811,56 +1074,86 @@ async function api(req, res, urlObj) {
   if (req.method === 'PUT' && pathname === '/api/teacher/sheet') {
     const body = await readJson(req);
     const assignment = db.teachingAssignments.find(a => a.id === body.assignmentId && a.active !== false);
-    if (!assignment || assignment.teacherUserId !== user.id) return sendError(res, 403, 'You may only edit your assigned subject');
+    if (!assignment || assignment.teacherUserId !== user.id) return sendError(res, 403, 'You may only edit your approved subject');
     const assessment = db.assessments.find(a => a.id === body.assessmentId && a.active !== false);
     if (!assessment) return sendError(res, 404, 'Assessment not found');
+    if (!assessmentAppliesToClass(assessment, assignment.classId)) return sendError(res, 403, 'This assessment is not assigned to this class');
     const sheet = ensureSheet(assignment, assessment.id, user.id);
     if (sheet.status === 'LOCKED') return sendError(res, 409, 'This result sheet has been locked by administration');
-    if (sheet.status === 'SUBMITTED' && body.action !== 'submit') return sendError(res, 409, 'This sheet has already been submitted. Ask the class teacher/HOD for a correction request before editing.');
+    if (sheet.status === 'SUBMITTED' && body.action !== 'submit') return sendError(res, 409, 'This sheet has already been submitted. A correction request is required before editing.');
+    const expectedRevision = body.expectedRevision;
+    if (expectedRevision !== undefined && expectedRevision !== null && Number(expectedRevision) !== Number(sheet.revision || 0)) {
+      return sendError(res, 409, `A newer version of this result sheet exists (server revision ${sheet.revision || 0}). Reopen the sheet before saving.`);
+    }
 
     const classPupils = db.pupils.filter(p => p.classId === assignment.classId && p.active !== false);
     const validIds = new Set(classPupils.map(p => p.id));
-    const marks = {}; const markStates = {};
     const rows = Array.isArray(body.rows) ? body.rows : Array.isArray(body.marks) ? body.marks : [];
-    for (const row of rows) {
-      if (!validIds.has(row.pupilId)) continue;
+    const rowMap = new Map(rows.filter(r=>validIds.has(r.pupilId)).map(r=>[r.pupilId,r]));
+    const marks = {}; const markStates = {}; const markNotes = {};
+    for (const p of classPupils) {
+      if (!pupilTakesSubject(p, assignment.subjectId)) {
+        markStates[p.id] = 'NOT_TAKING';
+        continue;
+      }
+      const row = rowMap.get(p.id) || {};
       const mark = normalizeMark(row.mark);
-      if (mark === undefined) return sendError(res, 400, `Invalid mark for pupil ${row.pupilId}. Marks must be 0–100 or blank.`);
+      if (mark === undefined) return sendError(res, 400, `Invalid mark for ${p.name}. Marks must be 0–100 or blank.`);
       let state = String(row.state || '').toUpperCase();
+      if (state === 'NOT_TAKING') return sendError(res, 400, `${p.name} is registered for ${assignmentView(assignment).subjectName}. Only school enrolment can mark a subject as Not Taking.`);
       if (mark !== null) state = 'PRESENT';
-      if (!['PRESENT', 'ABSENT', 'NOT_TAKING', 'PENDING'].includes(state)) state = mark !== null ? 'PRESENT' : 'PENDING';
+      if (!['PRESENT','ABSENT','PENDING'].includes(state)) state = mark !== null ? 'PRESENT' : 'PENDING';
       if (state === 'PRESENT' && mark === null) state = 'PENDING';
-      if (mark !== null) marks[row.pupilId] = mark;
-      markStates[row.pupilId] = state;
+      if (mark !== null) marks[p.id] = mark;
+      markStates[p.id] = state;
+      const note = String(row.note || '').trim().slice(0,300);
+      if (note) markNotes[p.id] = note;
     }
-    for (const p of classPupils) if (!markStates[p.id]) markStates[p.id] = sheet.markStates?.[p.id] || (sheet.marks?.[p.id] !== undefined ? 'PRESENT' : 'PENDING');
 
-    sheet.marks = marks; sheet.markStates = markStates; sheet.updatedAt = nowIso(); sheet.enteredByUserId = user.id;
+    sheet.marks = marks; sheet.markStates = markStates; sheet.markNotes = markNotes; sheet.updatedAt = nowIso(); sheet.enteredByUserId = user.id;
     const action = body.action === 'submit' ? 'submit' : 'draft';
     if (action === 'submit') {
-      const pending = classPupils.filter(p => (markStates[p.id] || 'PENDING') === 'PENDING');
-      if (pending.length) return sendError(res, 400, `${pending.length} pupil${pending.length === 1 ? '' : 's'} still marked Pending. Enter a mark or choose Absent / Not Taking before Finish & Submit.`);
+      const pending = classPupils.filter(p => pupilTakesSubject(p, assignment.subjectId) && (markStates[p.id] || 'PENDING') === 'PENDING' && !String(markNotes[p.id] || '').trim());
+      if (pending.length) return sendError(res, 400, `${pending.length} pupil${pending.length === 1 ? '' : 's'} still have a missing result with no explanation. Enter a mark or choose a reason first.`);
       sheet.status = 'SUBMITTED'; sheet.submittedAt = nowIso();
       audit(user.id, 'RESULTS_SUBMITTED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
       const cls = db.classes.find(c => c.id === assignment.classId); const subject = db.subjects.find(s => s.id === assignment.subjectId);
       const dept = db.departments.find(d => d.id === subject?.departmentId);
-      const recipients = [...new Set([cls?.classTeacherUserId, dept?.hodUserId, ...db.users.filter(u => hasRole(u, 'ADMIN')).map(u => u.id)].filter(Boolean))];
-      createNotification(recipients, 'RESULTS_SUBMITTED', `${subject?.name || 'Subject'} results received`, `${user.name} submitted ${subject?.name || 'subject'} results for ${cls?.name || 'class'} (${classPupils.length} pupils).`, { classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id });
+      const recipients = [...new Set([cls?.classTeacherUserId, dept?.hodUserId, ...db.users.filter(u => hasRole(u, 'ADMIN') || hasRole(u,'HEAD')).map(u => u.id)].filter(Boolean))];
+      createNotification(recipients, 'RESULTS_SUBMITTED', `${subject?.name || 'Subject'} results received`, `${user.name} submitted ${subject?.name || 'subject'} results for ${cls?.name || 'class'} (${classPupils.filter(p=>pupilTakesSubject(p,assignment.subjectId)).length} pupils taking the subject).`, { classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id });
     } else {
-      sheet.status = Object.keys(marks).length || Object.values(markStates).some(s => s !== 'PENDING') ? 'DRAFT' : 'NOT_STARTED';
-      audit(user.id, 'RESULTS_DRAFT_SAVED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
+      sheet.status = Object.keys(marks).length || Object.values(markStates).some(s => !['PENDING','NOT_TAKING'].includes(s)) ? 'DRAFT' : 'NOT_STARTED';
+      audit(user.id, 'RESULTS_DRAFT_AUTOSAVED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
     }
+    sheet.revision = Number(sheet.revision || 0) + 1;
     const storage = saveData();
-    broadcastEvent({ type: 'RESULT_SHEET_UPDATED', classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id, status: sheet.status, at: sheet.updatedAt }, escalationAudienceForAssignment(assignment));
+    broadcastEvent({ type: 'RESULT_SHEET_UPDATED', classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id, status: sheet.status, revision:sheet.revision, at: sheet.updatedAt }, escalationAudienceForAssignment(assignment));
     const cls = db.classes.find(c => c.id === assignment.classId);
     const subject = db.subjects.find(s => s.id === assignment.subjectId);
     const classTeacher = db.users.find(u => u.id === cls?.classTeacherUserId && u.active !== false);
     return sendJson(res, 200, {
-      ok:true, status:sheet.status, updatedAt:sheet.updatedAt, submittedAt:sheet.submittedAt,
+      ok:true, status:sheet.status, revision:sheet.revision, updatedAt:sheet.updatedAt, submittedAt:sheet.submittedAt,
       className:cls?.name || '', subjectName:subject?.name || '',
       classTeacherName:classTeacher?.name || '', classTeacherAssigned:!!classTeacher,
       storageRevision:storage.revision, storageSavedAt:storage.lastSavedAt
     });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/results/read-only') {
+    const assignmentId = urlObj.searchParams.get('assignmentId');
+    const assessmentId = urlObj.searchParams.get('assessmentId');
+    const assignment = db.teachingAssignments.find(a => a.id === assignmentId && a.active !== false);
+    if (!assignment || !canReadSubmittedAssignment(user, assignment)) return sendError(res, 403, 'You do not have permission to view this result sheet');
+    const assessment = db.assessments.find(a => a.id === assessmentId && a.active !== false);
+    if (!assessment) return sendError(res, 404, 'Assessment not found');
+    const sheet = findSheet(assignment.id, assessment.id);
+    if (!sheet || !sheetIsVisible(sheet)) return sendError(res, 409, 'Marks become visible to class teachers, HODs and administration only after the subject teacher submits them');
+    const pupils = db.pupils.filter(p => p.classId === assignment.classId && p.active !== false).map(p => {
+      const r = resultRowForPupil(sheet, p.id);
+      return { id:p.id, name:p.name, examNo:p.examNo || '', isRepeater:!!p.isRepeater, mark:r.mark, state:r.state, note:sheet.markNotes?.[p.id] || '' };
+    });
+    const teacher = db.users.find(u=>u.id===assignment.teacherUserId);
+    return sendJson(res, 200, { readOnly:true, assignment:assignmentView(assignment), assessment, status:sheet.status, submittedAt:sheet.submittedAt, updatedAt:sheet.updatedAt, teacherPhone:teacher?.phone || '', pupils });
   }
 
   if (req.method === 'GET' && pathname === '/api/class-teacher/classes') {
@@ -873,20 +1166,21 @@ async function api(req, res, urlObj) {
     if (!canViewClass(user, classId)) return sendError(res, 403, 'You are not the class teacher for this class');
     const cls = db.classes.find(c => c.id === classId); const assessment = db.assessments.find(a => a.id === assessmentId);
     if (!cls || !assessment) return sendError(res, 404, 'Class or assessment not found');
+    if (!assessmentAppliesToClass(assessment, classId)) return sendError(res, 403, 'This assessment is not assigned to this class');
     const assignments = db.teachingAssignments.filter(a => a.classId === classId && a.active !== false).map(assignmentView);
     const subjects = assignments.map(a => {
       const sheet = findSheet(a.id, assessmentId);
       const escalation = db.escalations.find(e => e.assignmentId === a.id && e.assessmentId === assessmentId && !['RESOLVED', 'CLOSED'].includes(e.status));
       return {
-        assignmentId: a.id, subjectId: a.subjectId, subjectName: a.subjectName, teacherName: a.teacherName,
+        assignmentId: a.id, subjectId: a.subjectId, subjectName: a.subjectName, teacherName: a.teacherName, teacherPhone: db.users.find(u=>u.id===a.teacherUserId)?.phone || '',
         status: sheet?.status || 'NOT_STARTED', updatedAt: sheet?.updatedAt || null, submittedAt: sheet?.submittedAt || null,
         deadline: getDeadlineState(assessment, sheet?.status || 'NOT_STARTED', sheet), escalation: escalation || null
       };
     });
     const pupils = db.pupils.filter(p => p.classId === classId && p.active !== false).map(p => {
       const results = {};
-      for (const a of assignments) results[a.subjectId] = resultRowForPupil(findSheet(a.id, assessmentId), p.id);
-      return { id: p.id, name: p.name, sex: p.sex, examNo: p.examNo || '', isRepeater: !!p.isRepeater, parentPrimary: p.parentPrimary || '', parentAltPhones: p.parentAltPhones || [], results };
+      for (const a of assignments) { const sh=findSheet(a.id, assessmentId); const rr=resultRowForPupil(sh,p.id); results[a.subjectId] = {...rr, note:sh?.markNotes?.[p.id] || ''}; }
+      return { id: p.id, name: p.name, sex: p.sex, examNo: p.examNo || '', isRepeater: !!p.isRepeater, parentPrimary: p.parentPrimary || '', parentAltPhones: p.parentAltPhones || [], results, reportReadiness:pupilReportReadiness(p,assessmentId) };
     });
     const classTeacher = db.users.find(u => u.id === cls.classTeacherUserId);
     return sendJson(res, 200, { class: cls, assessment, subjects, pupils, classTeacher: safeUser(classTeacher), reportReadiness: reportReadiness(classId, assessmentId) });
@@ -911,9 +1205,10 @@ async function api(req, res, urlObj) {
     if (!cls || !canViewClass(user, cls.id)) return sendError(res, 403, 'Class teacher access required');
     const pupil = db.pupils.find(p => p.id === body.pupilId && p.classId === cls.id);
     if (!pupil) return sendError(res, 404, 'Pupil not found');
-    const readiness = reportReadiness(cls.id, body.assessmentId);
-    if (!readiness.canSend) return sendError(res, 409, 'Reports are not ready and provisional release has not been authorized');
-    const log = { id: id('send'), at: nowIso(), classId: cls.id, assessmentId: body.assessmentId, pupilId: pupil.id, sentByUserId: user.id, channel: String(body.channel || 'SHARE'), provisional: readiness.provisional, parentNumber: String(body.parentNumber || pupil.parentPrimary || '') };
+    const readiness = pupilReportReadiness(pupil, body.assessmentId);
+    if (!readiness.canSend) return sendError(res, 409, 'This pupil report is incomplete and provisional release has not been approved');
+    const stage = ['GENERATED','SHARED','CONFIRMED_SENT'].includes(String(body.stage||'').toUpperCase()) ? String(body.stage).toUpperCase() : (String(body.channel||'').toUpperCase()==='SHARE'?'SHARED':'GENERATED');
+    const log = { id: id('send'), at: nowIso(), classId: cls.id, assessmentId: body.assessmentId, pupilId: pupil.id, sentByUserId: user.id, channel: String(body.channel || 'SHARE'), stage, provisional: readiness.provisional, parentNumber: String(body.parentNumber || pupil.parentPrimary || '') };
     db.reportSendLog.unshift(log); db.reportSendLog = db.reportSendLog.slice(0, 5000);
     audit(user.id, 'REPORT_SENT', `${cls.name}/${pupil.name}/${body.assessmentId}${readiness.provisional ? ' PROVISIONAL' : ''}`);
     saveData(); return sendJson(res, 201, { log });
@@ -1034,7 +1329,7 @@ async function api(req, res, urlObj) {
     const dept = getDepartmentForHod(user); if (!dept) return sendError(res, 403, 'HOD access required');
     const assessmentId = urlObj.searchParams.get('assessmentId') || db.assessments.find(a => a.active !== false)?.id; const assessment = db.assessments.find(a => a.id === assessmentId);
     if (!assessment) return sendError(res, 404, 'Assessment not found');
-    const rows = db.teachingAssignments.filter(a => a.active !== false && db.subjects.find(s => s.id === a.subjectId)?.departmentId === dept.id).map(a => {
+    const rows = db.teachingAssignments.filter(a => a.active !== false && assessmentAppliesToClass(assessment,a.classId) && db.subjects.find(s => s.id === a.subjectId)?.departmentId === dept.id).map(a => {
       const sheet = findSheet(a.id, assessment.id); const status = sheet?.status || 'NOT_STARTED';
       return { ...assignmentView(a), status, updatedAt: sheet?.updatedAt || null, submittedAt: sheet?.submittedAt || null, deadline: getDeadlineState(assessment, status, sheet) };
     });
@@ -1045,11 +1340,11 @@ async function api(req, res, urlObj) {
     if (!isAdminOrHead(user)) return sendError(res, 403, 'Administrator or Head Teacher access required');
     const assessmentId = urlObj.searchParams.get('assessmentId') || db.assessments.find(a => a.active !== false)?.id; const assessment = db.assessments.find(a => a.id === assessmentId);
     if (!assessment) return sendError(res, 404, 'Assessment not found');
-    const rows = db.teachingAssignments.filter(a => a.active !== false).map(a => {
+    const rows = db.teachingAssignments.filter(a => a.active !== false && assessmentAppliesToClass(assessment,a.classId)).map(a => {
       const sheet = findSheet(a.id, assessment.id); const status = sheet?.status || 'NOT_STARTED';
       return { ...assignmentView(a), status, updatedAt: sheet?.updatedAt || null, submittedAt: sheet?.submittedAt || null, deadline: getDeadlineState(assessment, status, sheet) };
     });
-    const classes = db.classes.filter(c => c.active !== false).map(c => ({ class: c, readiness: reportReadiness(c.id, assessment.id) }));
+    const classes = db.classes.filter(c => c.active !== false && assessmentAppliesToClass(assessment,c.id)).map(c => ({ class: c, readiness: reportReadiness(c.id, assessment.id) }));
     return sendJson(res, 200, { assessment, rows, classes });
   }
 
@@ -1070,6 +1365,49 @@ async function api(req, res, urlObj) {
       ok:true, token:issueToken(newAdmin.id),
       summary:{ classes:db.classes.length, pupils:db.pupils.length, staff:db.users.length, assignments:db.teachingAssignments.length, assessment:db.assessments[0]?.name }
     });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/practice-results') {
+    if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
+    if (!db.school?.demoMode) return sendError(res, 409, 'Practice result tools are available only while the practice school is loaded');
+    const body = await readJson(req);
+    const action = String(body.action || '').toUpperCase();
+    const assessment = db.assessments.find(a => a.id === (body.assessmentId || db.assessments.find(x => x.active !== false)?.id) && a.active !== false);
+    if (!assessment) return sendError(res, 404, 'Practice assessment not found');
+    const assignments = db.teachingAssignments.filter(a => a.active !== false);
+
+    if (action === 'CLEAR') {
+      db.resultSheets = db.resultSheets.filter(s => s.assessmentId !== assessment.id);
+      db.escalations = db.escalations.filter(e => e.assessmentId !== assessment.id);
+      db.reportReleaseApprovals = db.reportReleaseApprovals.filter(r => r.assessmentId !== assessment.id);
+      db.reportSendLog = db.reportSendLog.filter(r => r.assessmentId !== assessment.id);
+      db.notifications = db.notifications.filter(n => n.meta?.assessmentId !== assessment.id && n.type !== 'RESULTS_SUBMITTED');
+      audit(user.id, 'PRACTICE_RESULTS_CLEARED', assessment.name);
+      const storage = saveData();
+      broadcastEvent({ type:'PRACTICE_RESULTS_UPDATED', action:'CLEAR', assessmentId:assessment.id, at:nowIso() });
+      return sendJson(res, 200, { ok:true, action, submitted:0, draft:0, notStarted:assignments.length, storageRevision:storage.revision });
+    }
+
+    if (!['SUBMIT_ALL','MIXED'].includes(action)) return sendError(res, 400, 'Choose SUBMIT_ALL, MIXED or CLEAR');
+    let submitted = 0, draft = 0, notStarted = 0;
+    assignments.forEach((assignment, i) => {
+      let mode = 'SUBMITTED';
+      if (action === 'MIXED') {
+        const bucket = i % 7;
+        mode = bucket <= 4 ? 'SUBMITTED' : bucket === 5 ? 'DRAFT' : 'NOT_STARTED';
+      }
+      setPracticeSheetData(assignment, assessment, i, mode);
+      if (mode === 'SUBMITTED') submitted++; else if (mode === 'DRAFT') draft++; else notStarted++;
+    });
+    db.classes.filter(c => c.active !== false && c.classTeacherUserId).forEach(cls => {
+      const classAssignments = assignments.filter(a => a.classId === cls.id);
+      const done = classAssignments.filter(a => sheetIsVisible(findSheet(a.id, assessment.id))).length;
+      createNotification(cls.classTeacherUserId, 'PRACTICE_RESULTS_READY', `Practice results updated: ${cls.name}`, `${done}/${classAssignments.length} subject result sheets are now submitted for ${assessment.name}. Submitted marks are available in Class Progress as read-only results.`, { classId:cls.id, assessmentId:assessment.id });
+    });
+    audit(user.id, action === 'SUBMIT_ALL' ? 'PRACTICE_RESULTS_SUBMITTED_ALL' : 'PRACTICE_RESULTS_MIXED_SCENARIO', `${assessment.name}: ${submitted} submitted, ${draft} draft, ${notStarted} not started`);
+    const storage = saveData();
+    broadcastEvent({ type:'PRACTICE_RESULTS_UPDATED', action, assessmentId:assessment.id, submitted, draft, notStarted, at:nowIso() });
+    return sendJson(res, 200, { ok:true, action, submitted, draft, notStarted, total:assignments.length, storageRevision:storage.revision });
   }
 
   if (req.method === 'GET' && pathname === '/api/admin/setup') {
@@ -1149,7 +1487,9 @@ async function api(req, res, urlObj) {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req); const name = String(body.name || '').trim(); const dueAt = String(body.dueAt || '').trim();
     if (!name || !dueAt || Number.isNaN(new Date(dueAt).getTime())) return sendError(res, 400, 'Valid assessment name and deadline are required');
-    const assessment = { id: id('assess'), name, term: String(body.term || '').trim(), year: Number(body.year || new Date().getFullYear()), dueAt, active: true };
+    const classIds = Array.isArray(body.classIds) ? body.classIds.filter(cid=>db.classes.some(c=>c.id===cid&&c.active!==false)) : [];
+    const basePolicy = db.school.repeatPolicy || {passMark:50,minPassSubjects:5};
+    const assessment = { id: id('assess'), name, term: String(body.term || '').trim(), year: Number(body.year || new Date().getFullYear()), dueAt, active: true, classIds, passMark:Number(body.passMark ?? basePolicy.passMark ?? 50), minPassSubjects:Number(body.minPassSubjects ?? basePolicy.minPassSubjects ?? 5) };
     db.assessments.push(assessment); audit(user.id, 'ASSESSMENT_CREATED', `${name} due ${dueAt}`); saveData(); broadcastEvent({ type: 'ASSESSMENT_CREATED', assessmentId: assessment.id }); return sendJson(res, 201, { assessment });
   }
 
@@ -1157,7 +1497,8 @@ async function api(req, res, urlObj) {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req); const cls = db.classes.find(c => c.id === body.classId && c.active !== false); const name = String(body.name || '').trim();
     if (!cls || !name) return sendError(res, 400, 'Class and pupil name are required');
-    const pupil = { id: id('pupil'), classId: cls.id, name, sex: String(body.sex || '').trim().toUpperCase().slice(0, 1), examNo: String(body.examNo || '').trim(), parentPrimary: String(body.parentPrimary || '').trim(), parentAltPhones: Array.isArray(body.parentAltPhones) ? body.parentAltPhones.map(String) : [], isRepeater: !!body.isRepeater, active: true };
+    const subjectIds = Array.isArray(body.subjectIds) ? body.subjectIds.filter(sid=>db.subjects.some(s=>s.id===sid&&s.active!==false)) : [];
+    const pupil = { id: id('pupil'), classId: cls.id, name, sex: String(body.sex || '').trim().toUpperCase().slice(0, 1), examNo: String(body.examNo || '').trim(), parentPrimary: String(body.parentPrimary || '').trim(), parentAltPhones: Array.isArray(body.parentAltPhones) ? body.parentAltPhones.map(String) : [], isRepeater: !!body.isRepeater, subjectIds, active: true };
     db.pupils.push(pupil); audit(user.id, 'PUPIL_CREATED', `${name} / ${cls.name}`); saveData(); return sendJson(res, 201, { pupil });
   }
 

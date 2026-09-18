@@ -1,8 +1,8 @@
 {
   "name": "reportform-zm-school-results",
-  "version": "2.4.1",
+  "version": "2.6.0",
   "private": true,
-  "description": "ReportForm ZM V2.4.1 practice school with complete staffing and searchable practice staff directory.",
+  "description": "ReportForm ZM V2.6 simple results-to-parent workflow with teaching verification, provisional release approval and flexible repeat policy.",
   "scripts": {
     "start": "node server.js"
   },
