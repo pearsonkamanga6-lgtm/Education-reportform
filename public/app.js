@@ -164,7 +164,7 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card premium-login">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>EduSend School Results</h1><p>One mark entry. One school workflow. — V2.4</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>EduSend School Results</h1><p>One mark entry. One school workflow. — V2.4.1</p></div></div>
           <div class="login-hero"><b>School Results Workflow</b><span>Teachers enter once • Class teachers receive automatically • Parents get reports</span></div>
           <form id="loginForm">
             <div class="field"><label>Username</label><input id="username" autocomplete="username" value="kamanga" required></div>
@@ -172,26 +172,22 @@
             <button class="btn btn-primary full btn-lg" type="submit">Sign in to EduSend</button>
           </form>
           <div class="demo-box">
-            <div class="quick-login-head"><div><b>Starter accounts</b><div class="tiny muted">Tap an account to test each role.</div></div></div>
-            <div class="demo-grid" style="margin-top:10px">
-              ${demoAccount('Administrator','admin','admin123')}
-              ${demoAccount('Head Teacher','head','head123')}
-              ${demoAccount('Deputy Head Teacher','deputy','deputy123')}
-              ${demoAccount('Science HOD','hod.science','hod123')}
-              ${demoAccount('Languages HOD','hod.languages','hod123')}
-              ${demoAccount('Social Sciences HOD','hod.social','hod123')}
-              ${demoAccount('Business & Technology HOD','hod.business','hod123')}
-              ${demoAccount('Home Economics HOD','hod.home','hod123')}
-              ${demoAccount('Mr Kamanga P','kamanga','teach123','Teacher • Class Teacher')}
-              ${demoAccount('12L Class Teacher','chanda.commerce','teach123','Ms Esther Chanda')}
-              ${demoAccount('English Teacher','tembo.english','teach123')}
+            <div class="quick-login-head"><div><b>Practice staff directory</b><div class="tiny muted">All practice staff are listed here. Search by teacher, username, class or subject, then tap Open.</div></div><span id="demoCount" class="pill pill-blue">Loading…</span></div>
+            <div class="demo-tools">
+              <input id="demoSearch" class="demo-search" placeholder="Search teacher, class or subject…" autocomplete="off">
+              <select id="demoRoleFilter" class="demo-filter"><option value="ALL">All staff</option><option value="LEADERSHIP">Leadership & HODs</option><option value="CLASS_TEACHER">Class teachers</option><option value="TEACHER">Subject teachers</option></select>
             </div>
+            <div id="demoAccounts" class="demo-grid demo-directory"><div class="demo-loading">Loading all practice teachers…</div></div>
           </div>
         </div>
       </div>`;
-    document.querySelectorAll('.demo-account').forEach(card => card.addEventListener('click', () => {
-      byId('username').value = card.dataset.username; byId('password').value = card.dataset.password; byId('loginForm').requestSubmit();
-    }));
+    loadPracticeAccounts();
+    byId('demoAccounts')?.addEventListener('click', e => {
+      const card = e.target.closest('.demo-account'); if (!card) return;
+      byId('username').value = card.dataset.username || ''; byId('password').value = card.dataset.password || ''; byId('loginForm').requestSubmit();
+    });
+    byId('demoSearch')?.addEventListener('input', renderPracticeAccounts);
+    byId('demoRoleFilter')?.addEventListener('change', renderPracticeAccounts);
     byId('loginForm').addEventListener('submit', async e => {
       e.preventDefault(); const btn = e.submitter || e.target.querySelector('button[type="submit"]');
       btn.disabled = true; btn.textContent = 'Signing in…';
@@ -201,6 +197,57 @@
       } catch (err) { toast(err.message, true); }
       finally { btn.disabled = false; btn.textContent = 'Sign in to EduSend'; }
     });
+  }
+
+  let practiceAccounts = [];
+
+  async function loadPracticeAccounts() {
+    const holder = byId('demoAccounts'); if (!holder) return;
+    try {
+      const d = await api('/api/demo-accounts');
+      practiceAccounts = Array.isArray(d.accounts) ? d.accounts : [];
+      renderPracticeAccounts();
+    } catch (err) {
+      holder.innerHTML = `<div class="alert alert-orange small">Practice directory could not load. You can still sign in by typing your username and password above.</div>`;
+      const count = byId('demoCount'); if (count) count.textContent = 'Manual sign-in';
+    }
+  }
+
+  function practiceRoleLabel(a) {
+    const roles = a.roles || [];
+    if (roles.includes('ADMIN')) return 'Administrator';
+    if (a.username === 'head') return 'Head Teacher';
+    if (a.username === 'deputy') return 'Deputy Head Teacher';
+    if (roles.includes('HOD')) return 'HOD • Subject Teacher';
+    if ((a.classTeacherClasses || []).length) return 'Subject Teacher • Class Teacher';
+    return 'Subject Teacher';
+  }
+
+  function renderPracticeAccounts() {
+    const holder = byId('demoAccounts'); if (!holder) return;
+    const q = (byId('demoSearch')?.value || '').trim().toLowerCase();
+    const filter = byId('demoRoleFilter')?.value || 'ALL';
+    const matchesFilter = a => {
+      const roles = a.roles || [];
+      if (filter === 'LEADERSHIP') return roles.includes('ADMIN') || roles.includes('HEAD') || roles.includes('HOD');
+      if (filter === 'CLASS_TEACHER') return (a.classTeacherClasses || []).length > 0;
+      if (filter === 'TEACHER') return roles.includes('TEACHER');
+      return true;
+    };
+    const rows = practiceAccounts.filter(a => {
+      if (!matchesFilter(a)) return false;
+      const hay = [a.name,a.username,...(a.roles||[]),...(a.departments||[]),...(a.classTeacherClasses||[]),...(a.assignments||[]).flatMap(x=>[x.className,x.subjectName])].join(' ').toLowerCase();
+      return !q || hay.includes(q);
+    });
+    const count = byId('demoCount'); if (count) count.textContent = `${rows.length}/${practiceAccounts.length} staff`;
+    if (!rows.length) { holder.innerHTML = '<div class="empty">No staff match that search.</div>'; return; }
+    holder.innerHTML = rows.map(a => {
+      const classes = [...new Set((a.assignments||[]).map(x=>x.className))];
+      const subjects = [...new Set((a.assignments||[]).map(x=>x.subjectName))];
+      const ct = (a.classTeacherClasses||[]).length ? `<span class="demo-badge">Class Teacher: ${esc(a.classTeacherClasses.join(', '))}</span>` : '';
+      const teaching = subjects.length ? `<div class="demo-meta"><b>Teaches:</b> ${esc(subjects.join(', '))}</div><div class="demo-meta"><b>Classes:</b> ${esc(classes.join(', '))}</div>` : '<div class="demo-meta muted">Leadership account</div>';
+      return `<button type="button" class="demo-account demo-account-rich" data-username="${esc(a.username)}" data-password="${esc(a.demoPassword)}"><span class="demo-role">${esc(a.name)}</span><span class="demo-user">${esc(practiceRoleLabel(a))} • ${esc(a.username)}</span><span class="demo-go">Open →</span><div class="demo-detail">${ct}${teaching}</div></button>`;
+    }).join('');
   }
 
   function demoAccount(role, username, password, note='') {

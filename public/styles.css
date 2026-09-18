@@ -69,3 +69,14 @@ body{background:linear-gradient(180deg,#f7faff 0,#f2f6fb 260px,#f2f6fb 100%)}
 
 /* EduSend V2.4 complete-school staffing */
 .staffing-health{margin-top:16px}.staffing-matrix{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.staffing-class{border:1px solid var(--line);border-radius:16px;padding:14px;background:#fff}.staffing-class.complete{box-shadow:inset 4px 0 0 #0c8a60}.staffing-class.incomplete{box-shadow:inset 4px 0 0 #bd2c2c}.staffing-class-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:9px}.staffing-class-head>div{display:flex;flex-direction:column;gap:2px}.staffing-class-head b{font-size:16px;color:var(--navy)}.staffing-class-head small{color:var(--muted)}.ct-line{font-size:11px;padding:8px 9px;background:#f7f9fc;border-radius:10px;margin-bottom:9px}.staff-list{display:flex;flex-direction:column;gap:6px}.staff-list>div{display:grid;grid-template-columns:minmax(150px,.9fr) 1.4fr;gap:10px;padding:7px 8px;border:1px solid #edf0f5;border-radius:9px;font-size:11px}.staff-list span{color:var(--muted)}.danger-text{color:var(--red);font-weight:800}@media(max-width:900px){.staffing-matrix{grid-template-columns:1fr}}@media(max-width:600px){.staff-list>div{grid-template-columns:1fr;gap:2px}.staffing-health{grid-template-columns:1fr 1fr!important}}
+
+/* V2.4.1 practice staff directory */
+.demo-tools{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:8px;margin-top:11px}
+.demo-search,.demo-filter{width:100%;border:1px solid #d6deea;border-radius:11px;padding:10px 11px;background:#fff;color:var(--text);font:inherit}
+.demo-directory{margin-top:10px;max-height:580px;overflow:auto;padding-right:2px;align-items:start}
+.demo-loading{grid-column:1/-1;padding:18px;text-align:center;color:var(--muted);background:#fff;border:1px dashed #d9e1ed;border-radius:12px}
+.demo-account-rich{grid-template-areas:"role go" "user go" "detail detail";min-height:104px;align-content:start}
+.demo-account-rich .demo-detail{grid-area:detail;margin-top:7px;padding-top:7px;border-top:1px solid #edf1f6;display:flex;flex-direction:column;gap:3px;font-size:10px;color:#55657c;line-height:1.35}
+.demo-meta b{color:#23324a}
+.demo-badge{display:inline-flex;align-self:flex-start;border-radius:999px;background:#fff4ce;color:#725500;border:1px solid #f0d77a;padding:2px 7px;font-weight:700;margin-bottom:2px}
+@media(max-width:650px){.demo-tools{grid-template-columns:1fr}.demo-directory{max-height:650px}.demo-account-rich{min-height:112px}}
