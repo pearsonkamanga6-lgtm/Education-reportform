@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '2.3.0';
+  const APP_VERSION = '2.4.0';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -164,7 +164,7 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card premium-login">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>EduSend School Results</h1><p>One mark entry. One school workflow. — V2.3</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>EduSend School Results</h1><p>One mark entry. One school workflow. — V2.4</p></div></div>
           <div class="login-hero"><b>School Results Workflow</b><span>Teachers enter once • Class teachers receive automatically • Parents get reports</span></div>
           <form id="loginForm">
             <div class="field"><label>Username</label><input id="username" autocomplete="username" value="kamanga" required></div>
@@ -248,7 +248,7 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.3</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.4</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
@@ -302,7 +302,7 @@
         <article class="practice-step"><span>5</span><div><b>Escalate a late subject</b><p>As a class teacher, choose an outstanding subject and press Escalate. Then sign in as the HOD or Administrator to follow the escalation path.</p></div></article>
         <article class="practice-step"><span>6</span><div><b>Generate reports</b><p>When all required subjects are submitted, the class teacher opens Reports. CBC classes use Grades 1–5; Grade 10–12 use the legacy profile. Not Taking never becomes zero.</p></div></article>
       </div>
-      <div class="card space-top"><h3>Practice school structure</h3><p class="muted">Form 1: 1L, 1M • Form 2: 2L, 2M • Grade 10: 10N, 10M, 10P, 10L • Grade 11: 11M, 11N, 11P, 11L • Grade 12: 12M, 12N, 12P, 12L. Each class has 5 fictional pupils. Every class is staffed by nine distinct practice teachers. In Form 1–2, the two option-track teachers each handle the paired option subjects, so pupils still take exactly nine subjects.</p><p class="small"><b>Practice teacher password:</b> <code>teach123</code>. HOD password: <code>hod123</code>. Open Administrator → School Setup → Staff & Teaching Load to see every teacher, username, subject and class allocation.</p></div>`;
+      <div class="card space-top"><h3>Practice school structure</h3><p class="muted">Form 1: 1L, 1M • Form 2: 2L, 2M • Grade 10: 10M, 10N, 10L, 10P • Grade 11: 11L, 11M, 11N, 11P • Grade 12: 12L, 12M, 12N, 12P. Each class has 5 fictional pupils. Every pupil takes nine subjects and each of those nine subjects has a different teacher. Grade 10–12 therefore have nine subject teachers per class. Form 1–2 contain two alternative pathways, so the stream has eleven teachers across both pathways, while each individual pupil still has exactly nine different subject teachers. Every class also has one official class teacher, and all teaching staff have at least one subject allocation.</p><p class="small"><b>Practice teacher password:</b> <code>teach123</code>. HOD password: <code>hod123</code>. Open Administrator → School Setup → Staff & Teaching Load to see every teacher, username, subject and class allocation.</p></div>`;
   }
 
   async function renderDashboard(content) {
@@ -316,7 +316,7 @@
     const classCount = state.me.classTeacherClasses?.length || 0;
     const firstName = (state.me.user.name || '').replace(/^Mr\.?\s+|^Mrs\.?\s+|^Ms\.?\s+/i,'').split(' ')[0] || state.me.user.name;
     content.innerHTML = `
-      <section class="hero-card"><div><span class="eyebrow">EDUSEND V2.3</span><h1>Welcome, ${esc(firstName)}</h1><p>Enter results once. EduSend moves them to the right class teacher automatically.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card"><div><span class="eyebrow">EDUSEND V2.4</span><h1>Welcome, ${esc(firstName)}</h1><p>Enter results once. EduSend moves them to the right class teacher automatically.</p></div><div class="hero-orb">ES</div></section>
       ${deadlineBanner(rem.reminders)}
       <div class="grid grid-4 stats-grid">
         <div class="card stat-card"><div class="stat">${assignments.length}</div><div class="stat-label">Teaching allocations</div></div>
@@ -657,8 +657,27 @@
 
   async function renderAdmin(content) {
     const d=await api('/api/admin/setup'); const teachers=d.users.filter(u=>(u.roles||[]).includes('TEACHER'));
+    const classStaffing=d.classes.map(c=>{
+      const rows=d.teachingAssignments.filter(a=>a.classId===c.id);
+      const groups=new Map();
+      rows.forEach(a=>{const key=a.teacherUserId;const g=groups.get(key)||{teacherId:key,teacherName:a.teacherName||'Teacher',subjects:[]};g.subjects.push(a.subjectName);groups.set(key,g)});
+      const classTeacher=d.users.find(u=>u.id===c.classTeacherUserId);
+      const teachersHere=[...groups.values()];
+      const expectedTeachers=String(c.level||'').startsWith('Form')?11:9;
+      return {class:c,classTeacher,teachers:teachersHere,teacherCount:teachersHere.length,expectedTeachers,complete:teachersHere.length===expectedTeachers&&!!classTeacher};
+    });
+    const fullStaffed=classStaffing.filter(x=>x.teacherCount===x.expectedTeachers).length;
+    const classTeachersAssigned=classStaffing.filter(x=>!!x.classTeacher).length;
+    const teachingStaffWithLoad=teachers.filter(t=>d.teachingAssignments.some(a=>a.teacherUserId===t.id)).length;
     content.innerHTML=`<div class="admin-hero"><div><span class="eyebrow">ADMIN CONTROL CENTRE</span><h2>Configure the school once</h2><p>The administrator creates the structure and officially assigns each class teacher. EduSend recognizes that role immediately.</p></div><button id="backupBtn" class="btn btn-gold">Download data backup</button></div>
     <div class="demo-loader-card"><div><span class="eyebrow">ORIENTATION MODE</span><h3>Lumezi practice school</h3><p>Load 16 classes, 80 fictional pupils (5 per class), realistic staff roles, nine-subject pupil programmes and teaching assignments so you can practise the complete workflow.</p></div><button id="loadDemoBtn" class="btn btn-primary">${d.school.demoMode?'Reset practice school':'Load practice school'}</button></div>
+    <div class="grid grid-4 staffing-health">
+      <div class="card"><div class="stat">${d.classes.length}</div><div class="stat-label">Practice classes</div></div>
+      <div class="card"><div class="stat">${fullStaffed}/${d.classes.length}</div><div class="stat-label">Classes fully staffed</div></div>
+      <div class="card"><div class="stat">${classTeachersAssigned}/${d.classes.length}</div><div class="stat-label">Class teachers assigned</div></div>
+      <div class="card"><div class="stat">${teachingStaffWithLoad}/${teachers.length}</div><div class="stat-label">Teaching staff with subjects</div></div>
+    </div>
+    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS STAFFING MATRIX</span><h3 style="margin-top:4px">Every class, every teacher, every subject</h3></div><span class="pill ${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'pill-green':'pill-orange'}">${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'Complete':'Needs attention'}</span></div><p class="small muted">Every pupil has nine subjects taught by nine different teachers. Grade 10–12 therefore show 9 teachers. Form 1–2 show 11 teachers at stream level because the two alternative pathways add four option subjects, but each pupil still takes only one pathway and therefore has exactly 9 subject teachers.</p><div class="staffing-matrix">${classStaffing.map(x=>`<article class="staffing-class ${x.complete?'complete':'incomplete'}"><div class="staffing-class-head"><div><b>${esc(x.class.name)}</b><small>${esc(x.class.level)}</small></div><span class="pill ${x.teacherCount===x.expectedTeachers?'pill-green':'pill-red'}">${x.teacherCount}/${x.expectedTeachers} teachers</span></div><div class="ct-line"><b>Class teacher:</b> ${x.classTeacher?esc(x.classTeacher.name):'<span class="danger-text">Not assigned</span>'}</div><div class="staff-list">${x.teachers.map(t=>`<div><b>${esc(t.teacherName)}</b><span>${t.subjects.map(esc).join(' + ')}</span></div>`).join('')}</div></article>`).join('')}</div></div>
     <div class="admin-grid">
       <div class="card"><h3>Add staff account</h3><form id="addUserForm" class="stack"><input id="newName" placeholder="Full name" required><input id="newUsername" placeholder="Username" required><input id="newPhone" placeholder="Phone (optional)"><input id="newPassword" value="change123" required><select id="newDept"><option value="">No department</option>${d.departments.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><select id="newRole"><option value="TEACHER">Teacher</option><option value="HOD_TEACHER">HOD + Teacher</option><option value="HEAD">Head Teacher</option></select><button class="btn btn-primary">Create staff account</button></form></div>
       <div class="card"><h3>Create department / subject</h3><form id="deptForm" class="inline-form"><input id="deptName" placeholder="Department name"><button class="btn btn-secondary">Add department</button></form><hr><form id="subjectForm" class="stack"><input id="subjectName" placeholder="Subject name"><select id="subjectDept">${d.departments.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><button class="btn btn-primary">Add subject</button></form></div>
@@ -670,7 +689,7 @@
       <div class="card"><h3>School details</h3><form id="schoolForm" class="stack"><input id="schoolName" value="${esc(d.school.name||'')}" placeholder="School name"><input id="schoolMotto" value="${esc(d.school.motto||'')}" placeholder="Motto"><input id="schoolAddress" value="${esc(d.school.address||'')}" placeholder="Address"><input id="schoolEmail" value="${esc(d.school.email||'')}" placeholder="Email"><button class="btn btn-secondary">Save school details</button></form></div>
     </div>
     <div id="classTeacherCentre" class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS TEACHER ASSIGNMENT CENTRE</span><h3 style="margin-top:4px">One official class teacher per class</h3></div><span class="pill pill-blue">Administrator controlled</span></div><p class="small muted">Choose a teacher and press Assign / Change. EduSend updates the teacher's permissions automatically and sends a notification.</p><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Current class teacher</th><th>Assign / change to</th><th></th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${t?`<span class="pill pill-green">${esc(t.name)}</span>`:'<span class="pill pill-orange">Not assigned</span>'}</td><td><select id="ctPick_${c.id}"><option value="">— Not assigned —</option>${teachers.map(x=>`<option value="${x.id}" ${x.id===c.classTeacherUserId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></td><td><button class="btn btn-secondary" data-set-ct="${c.id}">${t?'Change':'Assign'}</button></td></tr>`}).join('')}</tbody></table></div></div>
-    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">STAFF & TEACHING LOAD</span><h3 style="margin-top:4px">Practice teacher directory</h3></div><span class="pill pill-blue">${teachers.length} teachers</span></div><p class="small muted">Every practice class has nine distinct teachers. The same teacher may teach several classes, just as in a real timetable. All ordinary practice teachers use password <b>teach123</b>.</p><div class="table-wrap"><table class="table"><thead><tr><th>Teacher</th><th>Username</th><th>Department</th><th>Teaching load</th><th>Class teacher of</th></tr></thead><tbody>${teachers.map(t=>{const loads=d.teachingAssignments.filter(a=>a.teacherUserId===t.id);const cls=d.classes.filter(c=>c.classTeacherUserId===t.id).map(c=>c.name);const dep=d.departments.find(x=>x.id===t.departmentId);return `<tr><td><b>${esc(t.name)}</b></td><td><code>${esc(t.username)}</code></td><td>${esc(dep?.name||'Multi-department')}</td><td>${loads.length?loads.map(a=>`${esc(a.className)} ${esc(a.subjectName)}`).join('<br>'):'—'}</td><td>${cls.length?esc(cls.join(', ')):'—'}</td></tr>`}).join('')}</tbody></table></div></div><div class="card space-top"><h3>Classes</h3><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Grading</th><th>Class teacher</th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${esc(c.gradingSystem)}</td><td>${esc(t?.name||'Not assigned')}</td></tr>`}).join('')}</tbody></table></div></div>`;
+    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">STAFF & TEACHING LOAD</span><h3 style="margin-top:4px">Practice teacher directory</h3></div><span class="pill pill-blue">${teachers.length} teachers</span></div><p class="small muted">Every practice pupil has nine subjects taught by nine different teachers. Grade 10–12 have nine subject teachers per stream; Form 1–2 have eleven teachers across the two option pathways. The same teacher may teach several classes, just as in a real timetable. All ordinary practice teachers use password <b>teach123</b>.</p><div class="table-wrap"><table class="table"><thead><tr><th>Teacher</th><th>Username</th><th>Department</th><th>Teaching load</th><th>Class teacher of</th></tr></thead><tbody>${teachers.map(t=>{const loads=d.teachingAssignments.filter(a=>a.teacherUserId===t.id);const cls=d.classes.filter(c=>c.classTeacherUserId===t.id).map(c=>c.name);const dep=d.departments.find(x=>x.id===t.departmentId);return `<tr><td><b>${esc(t.name)}</b></td><td><code>${esc(t.username)}</code></td><td>${esc(dep?.name||'Multi-department')}</td><td>${loads.length?loads.map(a=>`${esc(a.className)} ${esc(a.subjectName)}`).join('<br>'):'—'}</td><td>${cls.length?esc(cls.join(', ')):'—'}</td></tr>`}).join('')}</tbody></table></div></div><div class="card space-top"><h3>Classes</h3><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Grading</th><th>Class teacher</th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${esc(c.gradingSystem)}</td><td>${esc(t?.name||'Not assigned')}</td></tr>`}).join('')}</tbody></table></div></div>`;
     wireAdminForms(content,d);
     content.querySelector('[data-jump-ct]')?.addEventListener('click',()=>byId('classTeacherCentre')?.scrollIntoView({behavior:'smooth',block:'start'}));
     content.querySelectorAll('[data-set-ct]').forEach(btn=>btn.addEventListener('click',async()=>{
