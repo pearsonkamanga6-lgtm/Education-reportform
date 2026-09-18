@@ -1,8 +1,8 @@
 {
-  "name": "edusend-school-results",
-  "version": "2.3.0",
+  "name": "reportform-zm-school-results",
+  "version": "2.4.0",
   "private": true,
-  "description": "EduSend V2.3 practice school with nine distinct teachers per class and repaired reliable Save Draft / Finish & Submit workflow",
+  "description": "ReportForm ZM V2.4 practice school with complete 16-class staffing, nine distinct teachers per class, class-teacher assignments, and reliable result workflow",
   "scripts": {
     "start": "node server.js"
   },

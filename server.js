@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '2.3.0';
+const APP_VERSION = '2.4.0';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');
@@ -185,7 +185,13 @@ function makePracticeSchoolData() {
     ['usr_nkhoma_dtphysics','Mr Andrew Nkhoma','nkhoma.dtphysics','dept_business',['dept_business','dept_science']],
     ['usr_kabwe_dtphysics','Ms Wendy Kabwe','kabwe.dtphysics','dept_business',['dept_business','dept_science']]
   ];
-  const teacherByUsername = {};
+  const teacherByUsername = {
+    'hod.languages': hodLanguages,
+    'hod.science': hodScience,
+    'hod.social': hodSocial,
+    'hod.business': hodBusiness,
+    'hod.home': hodHome
+  };
   for (const row of teacherRows) {
     const [uid,name,username,departmentId,departmentIds] = row;
     const u = addUser(uid,name,username,'teach123',['TEACHER'],departmentId, username==='kamanga'?'0973296462':'');
@@ -199,20 +205,14 @@ function makePracticeSchoolData() {
   const classDefs = [
     ['class_1l','1L','Form 1','CBC'], ['class_1m','1M','Form 1','CBC'],
     ['class_2l','2L','Form 2','CBC'], ['class_2m','2M','Form 2','CBC'],
-    ['class_10n','10N','Grade 10','LEGACY'], ['class_10m','10M','Grade 10','LEGACY'], ['class_10p','10P','Grade 10','LEGACY'], ['class_10l','10L','Grade 10','LEGACY'],
-    ['class_11m','11M','Grade 11','LEGACY'], ['class_11n','11N','Grade 11','LEGACY'], ['class_11p','11P','Grade 11','LEGACY'], ['class_11l','11L','Grade 11','LEGACY'],
-    ['class_12m','12M','Grade 12','LEGACY'], ['class_12n','12N','Grade 12','LEGACY'], ['class_12p','12P','Grade 12','LEGACY'], ['class_12l','12L','Grade 12','LEGACY']
+    ['class_10m','10M','Grade 10','LEGACY'], ['class_10n','10N','Grade 10','LEGACY'], ['class_10l','10L','Grade 10','LEGACY'], ['class_10p','10P','Grade 10','LEGACY'],
+    ['class_11l','11L','Grade 11','LEGACY'], ['class_11m','11M','Grade 11','LEGACY'], ['class_11n','11N','Grade 11','LEGACY'], ['class_11p','11P','Grade 11','LEGACY'],
+    ['class_12l','12L','Grade 12','LEGACY'], ['class_12m','12M','Grade 12','LEGACY'], ['class_12n','12N','Grade 12','LEGACY'], ['class_12p','12P','Grade 12','LEGACY']
   ];
   const classes = classDefs.map(([idv,name,level,gradingSystem]) => ({ id:idv, name, level, gradingSystem, classTeacherUserId:null, active:true }));
 
-  // Exactly nine different teachers act as class teachers across the 16 streams.
-  const classTeacherMap = {
-    '1L':'tembo.english','1M':'banda.biology','2L':'phiri.math','2M':'zulu.geography',
-    '10N':'kamanga','10M':'mbewe.civic','10P':'lungu.re','10L':'chanda.commerce',
-    '11M':'mwale.accounts','11N':'tembo.english','11P':'banda.biology','11L':'phiri.math',
-    '12M':'zulu.geography','12N':'mbewe.civic','12P':'lungu.re','12L':'chanda.commerce'
-  };
-  for (const c of classes) c.classTeacherUserId = teacherByUsername[classTeacherMap[c.name]]?.id || null;
+  // Class teachers are assigned after the teaching timetable is built. This lets the seed
+  // guarantee that every class teacher is one of the nine teachers who actually teaches that class.
 
   const subjects = [
     {id:'sub_english',name:'English',departmentId:'dept_languages',active:true},
@@ -263,18 +263,18 @@ function makePracticeSchoolData() {
   });
 
   const teacherPools = {
-    sub_english:['tembo.english','nyirenda.english','chileshe.english'],
-    sub_mathematics:['phiri.math','mwanza.math','banda.math'],
+    sub_english:['hod.languages','tembo.english','nyirenda.english','chileshe.english'],
+    sub_mathematics:['hod.science','phiri.math','mwanza.math','banda.math'],
     sub_ict:['sakala.ict','mulenga.ict','zulu.ict'],
-    sub_civic:['mbewe.civic','chanda.civic','lungu.civic'],
+    sub_civic:['hod.social','mbewe.civic','chanda.civic','lungu.civic'],
     sub_geography:['zulu.geography','musonda.geography','mwale.geography'],
     sub_re:['lungu.re','nkandu.re','phiri.re'],
-    sub_commerce:['chanda.commerce','mwansa.commerce','kalaba.commerce'],
+    sub_commerce:['hod.business','chanda.commerce','mwansa.commerce','kalaba.commerce'],
     sub_biology:['banda.biology','njobvu.biology','kunda.biology'],
     sub_accounts:['mwale.accounts','daka.accounts','mwewa.accounts'],
     sub_physics:['mumba.physics','chisala.physics','siame.physics','kamanga']
   };
-  const bioHomePool = ['mulenga.biohome','chola.biohome'];
+  const bioHomePool = ['hod.home','mulenga.biohome','chola.biohome'];
   const dtPhysicsPool = ['nkhoma.dtphysics','kabwe.dtphysics'];
   const kamangaPhysicsClasses = new Set(['1L','10P','12L','12M']);
   const teachingAssignments = [];
@@ -287,20 +287,23 @@ function makePracticeSchoolData() {
     };
 
     if (lower) {
-      // Seven common subject teachers.
+      // Seven common subjects are taught by seven different teachers.
       for (const subjectId of lowerCommon) {
         const pool = teacherPools[subjectId];
         addAssignment(subjectId, pool[classIndex % pool.length]);
       }
-      // One teacher handles Biology + Home Economics; one teacher handles D&T + Physics.
-      // This gives nine distinct teachers in the class while preserving both pupil option pathways.
-      const bioHomeTeacher = bioHomePool[classIndex % bioHomePool.length];
-      let dtPhysicsTeacher = dtPhysicsPool[classIndex % dtPhysicsPool.length];
-      if (cls.name === '1L') dtPhysicsTeacher = 'kamanga';
-      addAssignment('sub_biology', bioHomeTeacher);
-      addAssignment('sub_home', bioHomeTeacher);
-      addAssignment('sub_dt', dtPhysicsTeacher);
-      addAssignment('sub_physics', dtPhysicsTeacher);
+      // Each option subject also has its own teacher. Therefore every Form 1/2 pupil has
+      // nine subjects taught by nine different teachers. Because the stream contains two
+      // option pathways, the class as a whole has eleven subject-teacher allocations.
+      const biologyTeacher = teacherPools.sub_biology[classIndex % teacherPools.sub_biology.length];
+      const homeTeacher = bioHomePool[classIndex % bioHomePool.length];
+      const dtTeacher = dtPhysicsPool[classIndex % dtPhysicsPool.length];
+      let physicsTeacher = teacherPools.sub_physics[classIndex % teacherPools.sub_physics.length];
+      if (cls.name === '1L') physicsTeacher = 'kamanga';
+      addAssignment('sub_biology', biologyTeacher);
+      addAssignment('sub_home', homeTeacher);
+      addAssignment('sub_dt', dtTeacher);
+      addAssignment('sub_physics', physicsTeacher);
     } else {
       for (const subjectId of upperNine) {
         let username;
@@ -314,10 +317,54 @@ function makePracticeSchoolData() {
     }
   });
 
-  // Guard the demo seed itself: every practice class must resolve to exactly nine distinct teachers.
+  // Give every class one official class teacher, chosen from the nine teachers who teach that class.
+  // We prefer a different class teacher for every stream so the training school is easy to understand.
+  const classCandidates = new Map(classes.map(cls => {
+    const ids = [...new Set(teachingAssignments.filter(a => a.classId === cls.id).map(a => a.teacherUserId))];
+    ids.sort((a,b) => {
+      const ua = users.find(u => u.id === a), ub = users.find(u => u.id === b);
+      const ah = hasRoleSeed(ua, 'HOD') ? 1 : 0, bh = hasRoleSeed(ub, 'HOD') ? 1 : 0;
+      return ah - bh || String(ua?.name||'').localeCompare(String(ub?.name||''));
+    });
+    return [cls.id, ids];
+  }));
+  const teacherToClass = new Map();
+  const classToTeacher = new Map();
+  function hasRoleSeed(u, role) { return Array.isArray(u?.roles) && u.roles.includes(role); }
+  function matchClass(classId, seen) {
+    for (const teacherId of classCandidates.get(classId) || []) {
+      if (seen.has(teacherId)) continue;
+      seen.add(teacherId);
+      const otherClass = teacherToClass.get(teacherId);
+      if (!otherClass || matchClass(otherClass, seen)) {
+        teacherToClass.set(teacherId, classId);
+        classToTeacher.set(classId, teacherId);
+        return true;
+      }
+    }
+    return false;
+  }
   for (const cls of classes) {
-    const distinctTeachers = new Set(teachingAssignments.filter(a => a.classId === cls.id).map(a => a.teacherUserId));
-    if (distinctTeachers.size !== 9) throw new Error(`Practice seed error: ${cls.name} has ${distinctTeachers.size} distinct teachers instead of 9.`);
+    if (!matchClass(cls.id, new Set())) throw new Error(`Practice seed error: could not assign a unique class teacher for ${cls.name}.`);
+  }
+  for (const cls of classes) cls.classTeacherUserId = classToTeacher.get(cls.id) || null;
+
+  // Guard the demo seed itself. Grade 10–12 classes have nine subject teachers. Form 1–2
+  // have eleven class-level teachers because the two alternative pathways add four option subjects,
+  // while each individual pupil still takes exactly nine subjects with nine different teachers.
+  for (const cls of classes) {
+    const classAssignments = teachingAssignments.filter(a => a.classId === cls.id);
+    const distinctTeachers = new Set(classAssignments.map(a => a.teacherUserId));
+    const expectedTeachers = cls.level.startsWith('Form') ? 11 : 9;
+    if (distinctTeachers.size !== expectedTeachers) throw new Error(`Practice seed error: ${cls.name} has ${distinctTeachers.size} distinct teachers instead of ${expectedTeachers}.`);
+    if (!cls.classTeacherUserId) throw new Error(`Practice seed error: ${cls.name} has no class teacher.`);
+    if (!distinctTeachers.has(cls.classTeacherUserId)) throw new Error(`Practice seed error: ${cls.name} class teacher is not one of its subject teachers.`);
+  }
+  const teachingStaff = users.filter(u => hasRoleSeed(u, 'TEACHER'));
+  for (const teacher of teachingStaff) {
+    if (!teachingAssignments.some(a => a.teacherUserId === teacher.id)) {
+      throw new Error(`Practice seed error: ${teacher.name} has no subject assignment.`);
+    }
   }
 
   const assessment = { id:'assess_practice_t3_2026', name:'Term 3 Practice Assessment 2026', term:'Term 3', year:2026, dueAt:'2026-09-25T16:00:00+02:00', active:true };
@@ -361,11 +408,11 @@ function makePracticeSchoolData() {
     school: {
       id:'school_1', name:'Lumezi Boarding Secondary School', motto:'EDUCATION WITH INTEGRITY AND VIRTUE',
       address:'P.O. Box 1, Lumezi', email:'lumeziboarding@edu.zm', demoMode:true,
-      demoNote:'Practice data only — 16 classes, 80 fictional pupils, nine distinct teachers per class, 9-subject pupil programmes.'
+      demoNote:'Practice data only — 16 classes, 80 fictional pupils, 9 subjects per pupil with a different teacher for every subject, one official class teacher per class, and complete staff allocations.'
     },
     users, departments, classes, subjects, assessments:[assessment], teachingAssignments, pupils, resultSheets,
     notifications, escalations:[], reportReleaseApprovals:[], reportSendLog:[],
-    auditLog:[{id:id('audit'),at:nowIso(),actorUserId:admin.id,action:'PRACTICE_SCHOOL_CREATED',detail:'Lumezi practice school: 16 classes, 80 fictional pupils, nine distinct teachers per class'}]
+    auditLog:[{id:id('audit'),at:nowIso(),actorUserId:admin.id,action:'PRACTICE_SCHOOL_CREATED',detail:'Lumezi practice school: 16 classes, 80 fictional pupils, 9 different subject teachers per pupil, 16 class teachers, all teaching staff allocated'}]
   };
 }
 
