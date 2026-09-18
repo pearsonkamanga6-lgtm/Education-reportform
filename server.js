@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '2.4.0';
+const APP_VERSION = '2.4.1';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');
@@ -685,6 +685,39 @@ async function api(req, res, urlObj) {
   const pathname = urlObj.pathname;
 
   if (req.method === 'GET' && pathname === '/api/version') return sendJson(res, 200, { version: APP_VERSION, storageRevision: db.storageMeta?.revision || 0, lastSavedAt: db.storageMeta?.lastSavedAt || null });
+
+  // Practice-only account directory used on the login screen. Never expose demo
+  // passwords when the school is switched out of demo mode.
+  if (req.method === 'GET' && pathname === '/api/demo-accounts') {
+    if (!db.school?.demoMode) return sendJson(res, 200, { demoMode: false, accounts: [] });
+    const classById = Object.fromEntries(db.classes.map(c => [c.id, c]));
+    const subjectByIdLocal = Object.fromEntries(db.subjects.map(s => [s.id, s]));
+    const deptById = Object.fromEntries(db.departments.map(d => [d.id, d]));
+    const passwordFor = (u) => {
+      if (u.username === 'admin') return 'admin123';
+      if (u.username === 'head') return 'head123';
+      if (u.username === 'deputy') return 'deputy123';
+      if ((u.roles || []).includes('HOD')) return 'hod123';
+      return 'teach123';
+    };
+    const accounts = db.users.filter(u => u.active !== false).map(u => {
+      const classTeacherClasses = db.classes.filter(c => c.active !== false && c.classTeacherUserId === u.id).map(c => c.name);
+      const assignments = db.teachingAssignments.filter(a => a.teacherUserId === u.id && a.active !== false).map(a => ({
+        className: classById[a.classId]?.name || a.classId,
+        subjectName: subjectByIdLocal[a.subjectId]?.name || a.subjectId
+      })).sort((a,b) => a.className.localeCompare(b.className) || a.subjectName.localeCompare(b.subjectName));
+      const deptIds = Array.from(new Set([u.departmentId, ...(u.departmentIds || [])].filter(Boolean)));
+      return {
+        id:u.id, name:u.name, username:u.username, roles:u.roles || [],
+        departments:deptIds.map(id => deptById[id]?.name).filter(Boolean),
+        classTeacherClasses, assignments, demoPassword:passwordFor(u)
+      };
+    }).sort((a,b) => {
+      const rank = x => x.roles.includes('ADMIN') ? 0 : x.username === 'head' ? 1 : x.username === 'deputy' ? 2 : x.roles.includes('HOD') ? 3 : x.classTeacherClasses.length ? 4 : 5;
+      return rank(a)-rank(b) || a.name.localeCompare(b.name);
+    });
+    return sendJson(res, 200, { demoMode: true, accounts });
+  }
 
   if (req.method === 'POST' && pathname === '/api/login') {
     const body = await readJson(req);

@@ -1,8 +1,8 @@
 {
   "name": "reportform-zm-school-results",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "private": true,
-  "description": "ReportForm ZM V2.4 practice school with complete 16-class staffing, nine distinct teachers per class, class-teacher assignments, and reliable result workflow",
+  "description": "ReportForm ZM V2.4.1 practice school with complete staffing and searchable practice staff directory.",
   "scripts": {
     "start": "node server.js"
   },
