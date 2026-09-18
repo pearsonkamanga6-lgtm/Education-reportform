@@ -87,7 +87,7 @@ body{background:linear-gradient(180deg,#f7faff 0,#f2f6fb 260px,#f2f6fb 100%)}
 @media(max-width:850px){.practice-results-card{flex-direction:column;align-items:stretch}.practice-result-actions{display:grid;grid-template-columns:1fr}.practice-result-actions .btn{width:100%}}
 
 /* =========================
-   Reportform ZM V2.6 Simple Mode
+   Reportform ZM V2.7 Simple Training
    ========================= */
 .simple-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
 .simple-summary .summary-item{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 3px 12px #1f35570b}
@@ -110,8 +110,17 @@ details.master-results{background:#fff;border:1px solid var(--line);border-radiu
   .simple-actions{grid-template-columns:1fr}.action-tile,.simple-actions .action-card{min-height:78px;padding:13px}.subject-grid{grid-template-columns:1fr}.page-intro{flex-direction:column}.approval-card,.approved-item,.policy-row{align-items:flex-start;flex-direction:column}.approval-actions{width:100%}.approval-actions .btn{flex:1}.policy-form{grid-template-columns:1fr}.policy-form .btn{width:100%}
   .simple-entry{min-width:500px}.simple-entry th,.simple-entry td{padding:8px 7px}.reason-select{min-width:132px}.topbar{height:58px}.topbar .tiny{display:none}
 }
-/* V2.6 compatibility corrections */
+/* V2.7 compatibility corrections */
 .simple-summary>div{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 3px 12px #1f35570b}.simple-summary>div>b{display:block;font-size:24px;font-weight:900;color:var(--navy);line-height:1.1}.simple-summary>div>span{display:block;margin-top:4px;font-size:11px;color:var(--muted)}
 .simple-actions .action-tile{border:1px solid var(--line);background:#fff;border-radius:16px;padding:16px;text-align:left;color:var(--text);box-shadow:0 3px 12px #1f35570b;display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"ico title arrow" "ico text arrow";gap:3px 11px;align-items:start;min-height:92px}.simple-actions .action-tile:hover{border-color:#a9c3ec;background:#f9fbff}.simple-actions .action-icon{grid-area:ico;width:38px;height:38px;border-radius:12px;background:#edf5ff;color:var(--navy);display:grid;place-items:center;font-size:18px;font-weight:900}.simple-actions .action-tile b{grid-area:title;display:block;margin:0}.simple-actions .action-tile small{grid-area:text;display:block;color:var(--muted);line-height:1.35}.simple-actions .action-tile .arrow{grid-area:arrow;align-self:center}
 .approved-list>div,.claim-list>div{display:flex;flex-wrap:wrap;gap:7px 10px;align-items:center;padding:10px 0;border-bottom:1px solid #edf0f5}.approved-list>div:last-child,.claim-list>div:last-child{border-bottom:0}.approved-list>div span,.claim-list>div small{color:var(--muted);font-size:11px}.claim-list>div b{flex:1;min-width:180px}
 @media(max-width:650px){.simple-summary>div{padding:10px}.simple-summary>div>b{font-size:20px}.simple-summary>div>span{font-size:9px}.simple-actions .action-tile{min-height:78px;padding:13px}}
+
+
+/* V2.7 simple training/login refinements */
+.simple-login-card{width:min(460px,100%)}
+.simple-login-form{display:grid;gap:12px}
+.training-login-hint{margin-top:16px;padding:12px 14px;border-radius:12px;background:#fff7db;border:1px solid #f1d888;display:flex;flex-direction:column;gap:3px;font-size:12px;color:#594a17}
+.training-login-hint.hidden{display:none}
+.training-login-hint code{font-weight:900;font-size:13px}
+@media(max-width:650px){.simple-login-card{padding:22px 18px}.simple-login-card .brand h1{font-size:21px}.simple-login-card .login-hero{padding:12px}}

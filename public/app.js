@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '2.6.0';
+  const APP_VERSION = '2.7.0';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -145,96 +145,34 @@
     disconnectEvents();
     app.innerHTML = `
       <div class="login-page">
-        <div class="login-card premium-login">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>EduSend School Results</h1><p>One mark entry. One simple workflow. — V2.6</p></div></div>
-          <div class="login-hero"><b>School Results Workflow</b><span>Teachers enter once • Class teachers receive automatically • Parents get reports</span></div>
-          <form id="loginForm">
-            <div class="field"><label>Username</label><input id="username" autocomplete="username" value="kamanga" required></div>
-            <div class="field"><label>Password</label><input id="password" type="password" autocomplete="current-password" value="teach123" required></div>
-            <button class="btn btn-primary full btn-lg" type="submit">Sign in to EduSend</button>
+        <div class="login-card simple-login-card">
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V2.7</p></div></div>
+          <div class="login-hero"><b>Welcome</b><span>Enter your name or staff ID to continue.</span></div>
+          <form id="loginForm" class="simple-login-form">
+            <div class="field"><label>Your name or staff ID</label><input id="identifier" list="staffSuggestions" autocomplete="username" placeholder="e.g. Kamanga or kamanga" required><datalist id="staffSuggestions"></datalist></div>
+            <div class="field"><label>PIN / password</label><input id="password" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Enter PIN or password" required></div>
+            <button class="btn btn-primary full btn-lg" type="submit">Continue</button>
           </form>
-          <div class="demo-box">
-            <div class="quick-login-head"><div><b>Practice staff directory</b><div class="tiny muted">All practice staff are listed here. Search by teacher, username, class or subject, then tap Open.</div></div><span id="demoCount" class="pill pill-blue">Loading…</span></div>
-            <div class="demo-tools">
-              <input id="demoSearch" class="demo-search" placeholder="Search teacher, class or subject…" autocomplete="off">
-              <select id="demoRoleFilter" class="demo-filter"><option value="ALL">All staff</option><option value="LEADERSHIP">Leadership & HODs</option><option value="CLASS_TEACHER">Class teachers</option><option value="TEACHER">Subject teachers</option></select>
-            </div>
-            <div id="demoAccounts" class="demo-grid demo-directory"><div class="demo-loading">Loading all practice teachers…</div></div>
-          </div>
+          <div id="trainingHint" class="training-login-hint hidden"><b>Training mode</b><span>Practice accounts use PIN <code>1234</code>. Start typing a staff name above; the list appears only when you need it.</span></div>
         </div>
       </div>`;
-    loadPracticeAccounts();
-    byId('demoAccounts')?.addEventListener('click', e => {
-      const card = e.target.closest('.demo-account'); if (!card) return;
-      byId('username').value = card.dataset.username || ''; byId('password').value = card.dataset.password || ''; byId('loginForm').requestSubmit();
-    });
-    byId('demoSearch')?.addEventListener('input', renderPracticeAccounts);
-    byId('demoRoleFilter')?.addEventListener('change', renderPracticeAccounts);
+    loadLoginSuggestions();
     byId('loginForm').addEventListener('submit', async e => {
-      e.preventDefault(); const btn = e.submitter || e.target.querySelector('button[type="submit"]');
-      btn.disabled = true; btn.textContent = 'Signing in…';
+      e.preventDefault(); const btn=e.submitter||e.target.querySelector('button[type="submit"]'); btn.disabled=true; btn.textContent='Opening…';
       try {
-        const d = await api('/api/login', { method:'POST', body:{ username:byId('username').value, password:byId('password').value } });
-        state.token = d.token; localStorage.setItem('edusend_token', state.token); await bootstrap();
-      } catch (err) { toast(err.message, true); }
-      finally { btn.disabled = false; btn.textContent = 'Sign in to EduSend'; }
+        const d=await api('/api/login',{method:'POST',body:{identifier:byId('identifier').value,password:byId('password').value}});
+        state.token=d.token; localStorage.setItem('edusend_token',state.token); await bootstrap();
+      } catch(err){toast(err.message,true)} finally {btn.disabled=false;btn.textContent='Continue'}
     });
   }
 
-  let practiceAccounts = [];
-
-  async function loadPracticeAccounts() {
-    const holder = byId('demoAccounts'); if (!holder) return;
-    try {
-      const d = await api('/api/demo-accounts');
-      practiceAccounts = Array.isArray(d.accounts) ? d.accounts : [];
-      const demoBox = holder.closest('.demo-box'); if (demoBox) demoBox.style.display = d.demoMode ? '' : 'none';
-      renderPracticeAccounts();
-    } catch (err) {
-      holder.innerHTML = `<div class="alert alert-orange small">Practice directory could not load. You can still sign in by typing your username and password above.</div>`;
-      const count = byId('demoCount'); if (count) count.textContent = 'Manual sign-in';
-    }
-  }
-
-  function practiceRoleLabel(a) {
-    const roles = a.roles || [];
-    if (roles.includes('ADMIN')) return 'Administrator';
-    if (a.username === 'head') return 'Head Teacher';
-    if (a.username === 'deputy') return 'Deputy Head Teacher';
-    if (roles.includes('HOD')) return 'HOD • Subject Teacher';
-    if ((a.classTeacherClasses || []).length) return 'Subject Teacher • Class Teacher';
-    return 'Subject Teacher';
-  }
-
-  function renderPracticeAccounts() {
-    const holder = byId('demoAccounts'); if (!holder) return;
-    const q = (byId('demoSearch')?.value || '').trim().toLowerCase();
-    const filter = byId('demoRoleFilter')?.value || 'ALL';
-    const matchesFilter = a => {
-      const roles = a.roles || [];
-      if (filter === 'LEADERSHIP') return roles.includes('ADMIN') || roles.includes('HEAD') || roles.includes('HOD');
-      if (filter === 'CLASS_TEACHER') return (a.classTeacherClasses || []).length > 0;
-      if (filter === 'TEACHER') return roles.includes('TEACHER');
-      return true;
-    };
-    const rows = practiceAccounts.filter(a => {
-      if (!matchesFilter(a)) return false;
-      const hay = [a.name,a.username,...(a.roles||[]),...(a.departments||[]),...(a.classTeacherClasses||[]),...(a.assignments||[]).flatMap(x=>[x.className,x.subjectName])].join(' ').toLowerCase();
-      return !q || hay.includes(q);
-    });
-    const count = byId('demoCount'); if (count) count.textContent = `${rows.length}/${practiceAccounts.length} staff`;
-    if (!rows.length) { holder.innerHTML = '<div class="empty">No staff match that search.</div>'; return; }
-    holder.innerHTML = rows.map(a => {
-      const classes = [...new Set((a.assignments||[]).map(x=>x.className))];
-      const subjects = [...new Set((a.assignments||[]).map(x=>x.subjectName))];
-      const ct = (a.classTeacherClasses||[]).length ? `<span class="demo-badge">Class Teacher: ${esc(a.classTeacherClasses.join(', '))}</span>` : '';
-      const teaching = subjects.length ? `<div class="demo-meta"><b>Teaches:</b> ${esc(subjects.join(', '))}</div><div class="demo-meta"><b>Classes:</b> ${esc(classes.join(', '))}</div>` : '<div class="demo-meta muted">Leadership account</div>';
-      return `<button type="button" class="demo-account demo-account-rich" data-username="${esc(a.username)}" data-password="${esc(a.demoPassword)}"><span class="demo-role">${esc(a.name)}</span><span class="demo-user">${esc(practiceRoleLabel(a))} • ${esc(a.username)}</span><span class="demo-go">Open →</span><div class="demo-detail">${ct}${teaching}</div></button>`;
-    }).join('');
-  }
-
-  function demoAccount(role, username, password, note='') {
-    return `<button type="button" class="demo-account" data-username="${esc(username)}" data-password="${esc(password)}"><span class="demo-role">${esc(role)}</span><span class="demo-user">${esc(note || username)}</span><span class="demo-go">Open →</span></button>`;
+  async function loadLoginSuggestions(){
+    try{
+      const d=await api('/api/demo-accounts');
+      const list=byId('staffSuggestions');
+      if(list) list.innerHTML=(d.accounts||[]).map(x=>`<option value="${esc(x.name)}">${esc(x.username)}</option>`).join('');
+      const hint=byId('trainingHint'); if(hint) hint.classList.toggle('hidden',!d.demoMode);
+    }catch{}
   }
 
   function logout(show = true) {
@@ -245,7 +183,11 @@
     try {
       const [me, assessments] = await Promise.all([api('/api/me'), api('/api/assessments')]);
       state.me = me; state.assessments = assessments.assessments || [];
-      renderShell(); connectEvents(); await refreshNotifications(); await navigate('dashboard'); checkVersion();
+      renderShell(); connectEvents(); await refreshNotifications();
+      const needsSetup = (me.user.roles||[]).includes('TEACHER') && !me.user.profileSetupComplete && !(me.classTeacherClasses||[]).length;
+      await navigate(needsSetup ? 'profile' : 'dashboard');
+      if (needsSetup) actionPopup('Set up your teaching profile','Choose what you teach and whether you are a class teacher. Your supervisor verifies it once.');
+      checkVersion();
     } catch (err) {
       state.token = ''; localStorage.removeItem('edusend_token'); renderLogin(); toast(err.message, true);
     }
@@ -272,7 +214,7 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.6</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.7</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
@@ -323,21 +265,17 @@
   }
 
   async function renderPractice(content) {
-    const demo = !!state.me?.school?.demoMode;
-    content.innerHTML = `
-      <div class="practice-hero">
-        <div><span class="eyebrow">GUIDED ORIENTATION</span><h2>Learn EduSend by doing the real workflow</h2><p>${demo?'You are using 80 fictional pupils across 16 practice classes. Nothing here is a real learner record.':'Ask the administrator to load the Lumezi practice school from School Setup.'}</p></div>
-        <div class="practice-count">${demo?'80':'—'}<small>practice pupils</small></div>
-      </div>
+    const demo=!!state.me?.school?.demoMode;
+    content.innerHTML=`
+      <div class="practice-hero"><div><span class="eyebrow">SIMPLE TRAINING MODE</span><h2>Test the full report workflow without lots of typing</h2><p>${demo?'Two classes, five pupils per class and five subjects per class. Nothing here is a real learner record.':'Ask the administrator to load the simple practice school from School Setup.'}</p></div><div class="practice-count">${demo?'10':'—'}<small>practice pupils</small></div></div>
       <div class="practice-steps">
-        <article class="practice-step"><span>1</span><div><b>Administrator</b><p>Sign in as <code>admin</code> / <code>admin123</code>. Open School Setup. Review 16 classes, staff, departments, subjects and the practice assessment. For fast testing, use <b>Create mixed scenario</b> or <b>Submit all practice results</b> so you do not have to type every mark manually.</p></div></article>
-        <article class="practice-step"><span>2</span><div><b>Subject teacher</b><p>To practise manual entry, sign in as <code>kamanga</code> / <code>teach123</code>. Open My Work → Enter Results → 12L Physics. Use <b>Fill demo marks</b>, review the five marks, then press <b>Submit Results</b>.</p></div></article>
-        <article class="practice-step"><span>3</span><div><b>Class teacher receives automatically</b><p>Sign out and use the class-teacher account shown under Administrator → School Setup → Staffing. Open <b>My Class Results</b>: the submitted marks should already be in the read-only master mark schedule. Corrections are requested back to the subject teacher.</p></div></article>
-        <article class="practice-step"><span>4</span><div><b>HOD monitors</b><p>Sign in as <code>hod.science</code> / <code>hod123</code>. Open <b>My Work → Results Status</b>. You will see submitted and outstanding Mathematics/Natural Sciences result sheets, plus any teaching claims waiting for verification.</p></div></article>
-        <article class="practice-step"><span>5</span><div><b>Escalate a late subject</b><p>As a class teacher, choose an outstanding subject and press Escalate. Then sign in as the HOD or Administrator to follow the escalation path.</p></div></article>
-        <article class="practice-step"><span>6</span><div><b>Generate reports</b><p>The class teacher opens <b>Prepare Reports</b>. Complete reports can be shared immediately. Incomplete reports require supervisor approval and are clearly marked provisional; a missing result never becomes zero.</p></div></article>
+        <article class="practice-step"><span>1</span><div><b>Sign in</b><p>Type a staff name or staff ID. In Training Mode all practice accounts use PIN <code>1234</code>.</p></div></article>
+        <article class="practice-step"><span>2</span><div><b>Enter one subject</b><p>Sign in as <code>Kamanga</code>, open My Work → Enter Results → 12L Physics. Use Fill demo marks if you want, then Submit Results.</p></div></article>
+        <article class="practice-step"><span>3</span><div><b>Class teacher receives automatically</b><p>Sign in as <code>Ms Ruth Tembo</code>. Open My Class Results. Physics appears automatically and remains read-only.</p></div></article>
+        <article class="practice-step"><span>4</span><div><b>Generate and send a report</b><p>Open Prepare Reports. Complete reports can be generated immediately. Incomplete reports can be sent only after supervisor approval and remain clearly provisional.</p></div></article>
+        <article class="practice-step"><span>5</span><div><b>Test first-time setup</b><p>Sign in as <code>Ms Esther Chanda</code>. She has no approved teaching load, so EduSend takes her straight to the teaching-profile setup.</p></div></article>
       </div>
-      <div class="card space-top"><h3>Practice school structure</h3><p class="muted">Form 1: 1L, 1M • Form 2: 2L, 2M • Grade 10: 10M, 10N, 10L, 10P • Grade 11: 11L, 11M, 11N, 11P • Grade 12: 12L, 12M, 12N, 12P. Each class has 5 fictional pupils. Every pupil takes nine subjects and each of those nine subjects has a different teacher. Grade 10–12 therefore have nine subject teachers per class. Form 1–2 contain two alternative pathways, so the stream has eleven teachers across both pathways, while each individual pupil still has exactly nine different subject teachers. Every class also has one official class teacher, and all teaching staff have at least one subject allocation.</p><p class="small"><b>Practice teacher password:</b> <code>teach123</code>. HOD password: <code>hod123</code>. Open Administrator → School Setup → Staff & Teaching Load to see every teacher, username, subject and class allocation.</p></div>`;
+      <div class="card space-top"><h3>Training school</h3><p class="muted"><b>1M (CBC)</b>: English, Mathematics, Integrated Science, ICT and Civic Education. <b>12L (Legacy)</b>: English, Mathematics, Physics, Biology and Geography. Each class has five fictional pupils.</p><p class="small"><b>Training PIN:</b> <code>1234</code> for every practice account.</p></div>`;
   }
 
   async function renderDashboard(content) {
@@ -356,7 +294,7 @@
     if(isRole('HOD')) mainActions.push(actionTile('✓','Teaching Approvals','Approve teachers who claim subjects in your department.','hodClaims'),actionTile('◫','Results Status','See submitted and missing department results.','hodProgress'));
     if(isAdminOrHeadFront()) mainActions.push(actionTile('◉','School Results','See school-wide submission progress.','schoolProgress'),actionTile('✓','Approval Requests','Approve incomplete report release and class-teacher claims.','approvals'));
     content.innerHTML = `
-      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.6</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.7</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
       ${isRole('TEACHER')?deadlineBanner(rem.reminders):''}
       <div class="simple-summary">
         ${isRole('TEACHER')?`<div><b>${submitted}/${sheets.length||0}</b><span>result sheets submitted</span></div>`:''}
@@ -707,14 +645,14 @@
       rows.forEach(a=>{const key=a.teacherUserId;const g=groups.get(key)||{teacherId:key,teacherName:a.teacherName||'Teacher',subjects:[]};g.subjects.push(a.subjectName);groups.set(key,g)});
       const classTeacher=d.users.find(u=>u.id===c.classTeacherUserId);
       const teachersHere=[...groups.values()];
-      const expectedTeachers=String(c.level||'').startsWith('Form')?11:9;
-      return {class:c,classTeacher,teachers:teachersHere,teacherCount:teachersHere.length,expectedTeachers,complete:teachersHere.length===expectedTeachers&&!!classTeacher};
+      const expectedTeachers=rows.length;
+      return {class:c,classTeacher,teachers:teachersHere,teacherCount:teachersHere.length,expectedTeachers,complete:rows.length>0&&!!classTeacher};
     });
-    const fullStaffed=classStaffing.filter(x=>x.teacherCount===x.expectedTeachers).length;
+    const fullStaffed=classStaffing.filter(x=>x.complete).length;
     const classTeachersAssigned=classStaffing.filter(x=>!!x.classTeacher).length;
     const teachingStaffWithLoad=teachers.filter(t=>d.teachingAssignments.some(a=>a.teacherUserId===t.id)).length;
     content.innerHTML=`<div class="admin-hero"><div><span class="eyebrow">ADMIN CONTROL CENTRE</span><h2>Configure the school once</h2><p>The administrator creates the structure and officially assigns each class teacher. EduSend recognizes that role immediately.</p></div><button id="backupBtn" class="btn btn-gold">Download data backup</button></div>
-    <div class="demo-loader-card"><div><span class="eyebrow">ORIENTATION MODE</span><h3>Lumezi practice school</h3><p>Load 16 classes, 80 fictional pupils (5 per class), realistic staff roles, nine-subject pupil programmes and teaching assignments so you can practise the complete workflow.</p></div><button id="loadDemoBtn" class="btn btn-primary">${d.school.demoMode?'Reset practice school':'Load practice school'}</button></div>
+    <div class="demo-loader-card"><div><span class="eyebrow">ORIENTATION MODE</span><h3>Lumezi practice school</h3><p>Load 2 classes, 10 fictional pupils, 10 staff and five subjects per class so you can practise the complete workflow quickly.</p></div><button id="loadDemoBtn" class="btn btn-primary">${d.school.demoMode?'Reset practice school':'Load practice school'}</button></div>
     ${d.school.demoMode?`<div class="practice-results-card"><div><span class="eyebrow">FAST TESTING</span><h3>Generate practice results automatically</h3><p>You do not need to type every mark. Create a mixed school scenario, submit every subject instantly, or clear only the practice results and start again. These tools never change staff, classes or pupils.</p></div><div class="practice-result-actions"><button id="practiceMixedBtn" class="btn btn-secondary">Create mixed scenario</button><button id="practiceSubmitAllBtn" class="btn btn-green">Submit all practice results</button><button id="practiceClearBtn" class="btn btn-danger-soft">Clear practice results</button></div></div>`:''}
     <div class="grid grid-4 staffing-health">
       <div class="card"><div class="stat">${d.classes.length}</div><div class="stat-label">Practice classes</div></div>
@@ -722,7 +660,7 @@
       <div class="card"><div class="stat">${classTeachersAssigned}/${d.classes.length}</div><div class="stat-label">Class teachers assigned</div></div>
       <div class="card"><div class="stat">${teachingStaffWithLoad}/${teachers.length}</div><div class="stat-label">Teaching staff with subjects</div></div>
     </div>
-    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS STAFFING MATRIX</span><h3 style="margin-top:4px">Every class, every teacher, every subject</h3></div><span class="pill ${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'pill-green':'pill-orange'}">${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'Complete':'Needs attention'}</span></div><p class="small muted">Every pupil has nine subjects taught by nine different teachers. Grade 10–12 therefore show 9 teachers. Form 1–2 show 11 teachers at stream level because the two alternative pathways add four option subjects, but each pupil still takes only one pathway and therefore has exactly 9 subject teachers.</p><div class="staffing-matrix">${classStaffing.map(x=>`<article class="staffing-class ${x.complete?'complete':'incomplete'}"><div class="staffing-class-head"><div><b>${esc(x.class.name)}</b><small>${esc(x.class.level)}</small></div><span class="pill ${x.teacherCount===x.expectedTeachers?'pill-green':'pill-red'}">${x.teacherCount}/${x.expectedTeachers} teachers</span></div><div class="ct-line"><b>Class teacher:</b> ${x.classTeacher?esc(x.classTeacher.name):'<span class="danger-text">Not assigned</span>'}</div><div class="staff-list">${x.teachers.map(t=>`<div><b>${esc(t.teacherName)}</b><span>${t.subjects.map(esc).join(' + ')}</span></div>`).join('')}</div></article>`).join('')}</div></div>
+    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS STAFFING MATRIX</span><h3 style="margin-top:4px">Every class, every teacher, every subject</h3></div><span class="pill ${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'pill-green':'pill-orange'}">${fullStaffed===d.classes.length&&classTeachersAssigned===d.classes.length?'Complete':'Needs attention'}</span></div><p class="small muted">This training school is deliberately small: five subject allocations per class and one class teacher, so the whole results-to-parent workflow is easy to test.</p><div class="staffing-matrix">${classStaffing.map(x=>`<article class="staffing-class ${x.complete?'complete':'incomplete'}"><div class="staffing-class-head"><div><b>${esc(x.class.name)}</b><small>${esc(x.class.level)}</small></div><span class="pill ${x.teacherCount===x.expectedTeachers?'pill-green':'pill-red'}">${x.teacherCount}/${x.expectedTeachers} teachers</span></div><div class="ct-line"><b>Class teacher:</b> ${x.classTeacher?esc(x.classTeacher.name):'<span class="danger-text">Not assigned</span>'}</div><div class="staff-list">${x.teachers.map(t=>`<div><b>${esc(t.teacherName)}</b><span>${t.subjects.map(esc).join(' + ')}</span></div>`).join('')}</div></article>`).join('')}</div></div>
     <div class="admin-grid">
       <div class="card"><h3>Add staff account</h3><form id="addUserForm" class="stack"><input id="newName" placeholder="Full name" required><input id="newUsername" placeholder="Username" required><input id="newPhone" placeholder="Phone (optional)"><input id="newPassword" value="change123" required><select id="newDept"><option value="">No department</option>${d.departments.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><select id="newRole"><option value="TEACHER">Teacher</option><option value="HOD_TEACHER">HOD + Teacher</option><option value="HEAD">Head Teacher</option></select><button class="btn btn-primary">Create staff account</button></form></div>
       <div class="card"><h3>Create department / subject</h3><form id="deptForm" class="inline-form"><input id="deptName" placeholder="Department name"><button class="btn btn-secondary">Add department</button></form><hr><form id="subjectForm" class="stack"><input id="subjectName" placeholder="Subject name"><select id="subjectDept">${d.departments.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select><button class="btn btn-primary">Add subject</button></form></div>
@@ -734,7 +672,7 @@
       <div class="card"><h3>School details</h3><form id="schoolForm" class="stack"><input id="schoolName" value="${esc(d.school.name||'')}" placeholder="School name"><input id="schoolMotto" value="${esc(d.school.motto||'')}" placeholder="Motto"><input id="schoolAddress" value="${esc(d.school.address||'')}" placeholder="Address"><input id="schoolEmail" value="${esc(d.school.email||'')}" placeholder="Email"><button class="btn btn-secondary">Save school details</button></form></div>
     </div>
     <div id="classTeacherCentre" class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS TEACHER ASSIGNMENT CENTRE</span><h3 style="margin-top:4px">One official class teacher per class</h3></div><span class="pill pill-blue">Administrator controlled</span></div><p class="small muted">Choose a teacher and press Assign / Change. EduSend updates the teacher's permissions automatically and sends a notification.</p><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Current class teacher</th><th>Assign / change to</th><th></th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${t?`<span class="pill pill-green">${esc(t.name)}</span>`:'<span class="pill pill-orange">Not assigned</span>'}</td><td><select id="ctPick_${c.id}"><option value="">— Not assigned —</option>${teachers.map(x=>`<option value="${x.id}" ${x.id===c.classTeacherUserId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></td><td><button class="btn btn-secondary" data-set-ct="${c.id}">${t?'Change':'Assign'}</button></td></tr>`}).join('')}</tbody></table></div></div>
-    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">STAFF & TEACHING LOAD</span><h3 style="margin-top:4px">Practice teacher directory</h3></div><span class="pill pill-blue">${teachers.length} teachers</span></div><p class="small muted">Every practice pupil has nine subjects taught by nine different teachers. Grade 10–12 have nine subject teachers per stream; Form 1–2 have eleven teachers across the two option pathways. The same teacher may teach several classes, just as in a real timetable. All ordinary practice teachers use password <b>teach123</b>.</p><div class="table-wrap"><table class="table"><thead><tr><th>Teacher</th><th>Username</th><th>Department</th><th>Teaching load</th><th>Class teacher of</th></tr></thead><tbody>${teachers.map(t=>{const loads=d.teachingAssignments.filter(a=>a.teacherUserId===t.id);const cls=d.classes.filter(c=>c.classTeacherUserId===t.id).map(c=>c.name);const dep=d.departments.find(x=>x.id===t.departmentId);return `<tr><td><b>${esc(t.name)}</b></td><td><code>${esc(t.username)}</code></td><td>${esc(dep?.name||'Multi-department')}</td><td>${loads.length?loads.map(a=>`${esc(a.className)} ${esc(a.subjectName)}`).join('<br>'):'—'}</td><td>${cls.length?esc(cls.join(', ')):'—'}</td></tr>`}).join('')}</tbody></table></div></div><div class="card space-top"><h3>Classes</h3><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Grading</th><th>Class teacher</th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${esc(c.gradingSystem)}</td><td>${esc(t?.name||'Not assigned')}</td></tr>`}).join('')}</tbody></table></div></div>`;
+    <div class="card space-top"><div class="section-title"><div><span class="eyebrow">STAFF & TEACHING LOAD</span><h3 style="margin-top:4px">Practice teacher directory</h3></div><span class="pill pill-blue">${teachers.length} teachers</span></div><p class="small muted">The training school is deliberately small. The same teacher may teach both classes, just as in a real timetable. All practice accounts use PIN <b>1234</b>.</p><div class="table-wrap"><table class="table"><thead><tr><th>Teacher</th><th>Username</th><th>Department</th><th>Teaching load</th><th>Class teacher of</th></tr></thead><tbody>${teachers.map(t=>{const loads=d.teachingAssignments.filter(a=>a.teacherUserId===t.id);const cls=d.classes.filter(c=>c.classTeacherUserId===t.id).map(c=>c.name);const dep=d.departments.find(x=>x.id===t.departmentId);return `<tr><td><b>${esc(t.name)}</b></td><td><code>${esc(t.username)}</code></td><td>${esc(dep?.name||'Multi-department')}</td><td>${loads.length?loads.map(a=>`${esc(a.className)} ${esc(a.subjectName)}`).join('<br>'):'—'}</td><td>${cls.length?esc(cls.join(', ')):'—'}</td></tr>`}).join('')}</tbody></table></div></div><div class="card space-top"><h3>Classes</h3><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Grading</th><th>Class teacher</th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${esc(c.gradingSystem)}</td><td>${esc(t?.name||'Not assigned')}</td></tr>`}).join('')}</tbody></table></div></div>`;
     wireAdminForms(content,d);
     content.querySelector('[data-jump-ct]')?.addEventListener('click',()=>byId('classTeacherCentre')?.scrollIntoView({behavior:'smooth',block:'start'}));
     content.querySelectorAll('[data-set-ct]').forEach(btn=>btn.addEventListener('click',async()=>{
@@ -750,10 +688,10 @@
 
   function wireAdminForms(content,d){
     if (byId('loadDemoBtn')) byId('loadDemoBtn').onclick = async () => {
-      const first = confirm('This will replace the current EduSend data with the Lumezi practice school. A server-side backup will be attempted first. Continue?');
+      const first = confirm('This will replace the current EduSend data with the simple training school. A server-side backup will be attempted first. Continue?');
       if (!first) return;
-      const phrase = prompt('Type LOAD LUMEZI PRACTICE to confirm:');
-      if (phrase !== 'LOAD LUMEZI PRACTICE') { toast('Practice school was not loaded.', true); return; }
+      const phrase = prompt('Type LOAD SIMPLE PRACTICE to confirm:');
+      if (phrase !== 'LOAD SIMPLE PRACTICE') { toast('Practice school was not loaded.', true); return; }
       const btn = byId('loadDemoBtn'); btn.disabled = true; btn.textContent = 'Building practice school…';
       try {
         const r = await api('/api/admin/load-practice-demo', { method:'POST', body:{confirm:phrase} });
