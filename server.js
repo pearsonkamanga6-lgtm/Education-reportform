@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.8.0';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');

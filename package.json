@@ -1,8 +1,8 @@
 {
   "name": "reportform-zm-school-results",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "private": true,
-  "description": "ReportForm ZM V2.7 simple training build: 2 classes, 10 staff, 5 subjects per class, name/PIN login and guided first-time teaching profile.",
+  "description": "ReportForm ZM V2.8 offline-first mark entry: cached teacher sheets, local outbox, automatic sync and simple connection status.",
   "scripts": {
     "start": "node server.js"
   },
