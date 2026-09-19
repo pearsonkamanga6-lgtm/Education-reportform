@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '2.7.0';
+  const APP_VERSION = '2.8.0';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -11,7 +11,9 @@
     notificationTimer: null,
     unread: 0,
     activeSheet: null,
-    autosaveTimer: null
+    autosaveTimer: null,
+    syncBusy: false,
+    offlinePrepared: false
   };
 
   const esc = (s) => String(s ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -21,7 +23,191 @@
   const roles = () => state.me?.user?.roles || [];
   const isRole = r => roles().includes(r);
   const isClassTeacher = () => !!state.me?.classTeacherClasses?.length;
-  const DRAFT_PREFIX = 'edusend_local_draft_v2_3:';
+  const DRAFT_PREFIX = 'edusend_local_draft_v2_8:';
+
+
+  // --- V2.8 offline-first storage -------------------------------------------------
+  // IndexedDB holds cached teacher data and a small outbox. The app can therefore
+  // open and accept marks without mobile data after the teacher has opened it online once.
+  const OFFLINE_DB = 'reportform_zm_offline_v1';
+  const OFFLINE_DB_VERSION = 1;
+  let offlineDbPromise = null;
+
+  function openOfflineDb() {
+    if (!('indexedDB' in window)) return Promise.reject(new Error('Offline storage is not supported on this device'));
+    if (offlineDbPromise) return offlineDbPromise;
+    offlineDbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(OFFLINE_DB, OFFLINE_DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache', { keyPath:'key' });
+        if (!db.objectStoreNames.contains('outbox')) db.createObjectStore('outbox', { keyPath:'key' });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('Could not open offline storage'));
+    });
+    return offlineDbPromise;
+  }
+
+  async function idbPut(storeName, value) {
+    const db = await openOfflineDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).put(value);
+      tx.oncomplete = () => resolve(value);
+      tx.onerror = () => reject(tx.error || new Error('Offline storage failed'));
+    });
+  }
+  async function idbGet(storeName, key) {
+    const db = await openOfflineDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).get(key);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => reject(req.error || new Error('Offline storage failed'));
+    });
+  }
+  async function idbGetAll(storeName) {
+    const db = await openOfflineDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error || new Error('Offline storage failed'));
+    });
+  }
+  async function idbDelete(storeName, key) {
+    const db = await openOfflineDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Offline storage failed'));
+    });
+  }
+
+  function cacheKey(path) { return `${state.me?.user?.id || 'anon'}::${path}`; }
+  async function cacheApi(path, data) {
+    try { await idbPut('cache', { key:cacheKey(path), path, userId:state.me?.user?.id || null, data, savedAt:new Date().toISOString() }); } catch {}
+  }
+  async function readCachedApi(path) {
+    try {
+      // During bootstrap state.me is still null. /api/me is cached under the user id,
+      // so search the cache for the newest matching path if the exact key is unknown.
+      if (!state.me?.user?.id) {
+        const all = await idbGetAll('cache');
+        const candidates = all.filter(x => x.path === path).sort((a,b)=>Date.parse(b.savedAt||0)-Date.parse(a.savedAt||0));
+        return candidates[0]?.data || null;
+      }
+      return (await idbGet('cache', cacheKey(path)))?.data || null;
+    } catch { return null; }
+  }
+
+  function outboxKey(assignmentId, assessmentId) { return `${state.me?.user?.id || 'unknown'}::${assignmentId}::${assessmentId}`; }
+  async function queueSheetChange(payload) {
+    const key = outboxKey(payload.assignmentId, payload.assessmentId);
+    const item = { key, userId:state.me?.user?.id || null, path:'/api/teacher/sheet', method:'PUT', payload, queuedAt:new Date().toISOString(), lastError:'' };
+    await idbPut('outbox', item);
+    requestBackgroundSync();
+    updateConnectivityUi();
+    return item;
+  }
+  async function pendingOutbox() {
+    try { return (await idbGetAll('outbox')).filter(x => !state.me?.user?.id || x.userId === state.me.user.id); } catch { return []; }
+  }
+
+  async function requestBackgroundSync() {
+    try {
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg.sync) await reg.sync.register('edusend-sync-results');
+      }
+    } catch {}
+  }
+
+  async function rawApi(path, opts={}) {
+    const headers = { ...(opts.headers || {}) };
+    if (state.token) headers.Authorization = `Bearer ${state.token}`;
+    if (opts.body && typeof opts.body !== 'string') headers['Content-Type'] = 'application/json';
+    const body = opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body;
+    const res = await fetch(path, { ...opts, headers, body, cache:'no-store' });
+    const data = await res.json().catch(()=>({}));
+    if (!res.ok) { const e = new Error(data.error || `Request failed (${res.status})`); e.status=res.status; throw e; }
+    return data;
+  }
+
+  async function flushOutbox(showResult=false) {
+    if (state.syncBusy || !navigator.onLine || !state.token) return { synced:0, failed:0 };
+    state.syncBusy = true; updateConnectivityUi('syncing');
+    let synced=0, failed=0;
+    try {
+      const items = (await pendingOutbox()).sort((a,b)=>Date.parse(a.queuedAt||0)-Date.parse(b.queuedAt||0));
+      for (const item of items) {
+        try {
+          const result = await rawApi(item.path, { method:item.method, body:item.payload });
+          await idbDelete('outbox', item.key);
+          removeLocalDraft(item.payload.assignmentId, item.payload.assessmentId);
+          synced++;
+          if (item.payload.action === 'submit' && showResult) toast(`${result.subjectName || 'Results'} synced and sent`);
+        } catch (e) {
+          failed++;
+          item.lastError = e.message;
+          item.lastTriedAt = new Date().toISOString();
+          await idbPut('outbox', item).catch(()=>{});
+          // A revision conflict needs the teacher to resolve it; retrying repeatedly is unsafe.
+          if (e.status === 409) actionPopup('Sync needs attention','A result sheet changed on another device. Open that sheet online before editing again.','error');
+          if (e.status === 401) break;
+        }
+      }
+    } finally {
+      state.syncBusy=false; updateConnectivityUi();
+    }
+    if (showResult && synced && !failed) toast(`${synced} offline change${synced===1?'':'s'} synced`);
+    return { synced, failed };
+  }
+
+  async function prepareTeacherOfflineData() {
+    if (!navigator.onLine || !state.token || !isRole('TEACHER')) return;
+    try {
+      const d = await rawApi('/api/teacher/assignments');
+      await cacheApi('/api/teacher/assignments', d);
+      const jobs=[];
+      for (const a of d.assignments || []) for (const sh of a.sheets || []) {
+        const path=`/api/teacher/sheet?assignmentId=${encodeURIComponent(a.id)}&assessmentId=${encodeURIComponent(sh.assessment.id)}`;
+        jobs.push(rawApi(path).then(data=>cacheApi(path,data)).catch(()=>null));
+      }
+      await Promise.all(jobs);
+      state.offlinePrepared=true;
+      try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
+      updateConnectivityUi();
+    } catch {}
+  }
+
+  async function offlineAssignmentOverlay(data) {
+    const items = await pendingOutbox();
+    for (const item of items) {
+      const p=item.payload;
+      for (const a of data.assignments || []) if (a.id===p.assignmentId) {
+        for (const sh of a.sheets || []) if (sh.assessment.id===p.assessmentId) {
+          sh.status = p.action==='submit' ? 'SYNC_PENDING' : 'DRAFT';
+          sh.entered = (p.rows||[]).filter(r=>r.mark!==null || r.note).length;
+          sh.offlineQueued = true;
+        }
+      }
+    }
+    return data;
+  }
+
+  async function updateConnectivityUi(forced='') {
+    const online = navigator.onLine;
+    const pending = await pendingOutbox();
+    const badge = byId('connectionBadge');
+    if (badge) {
+      const text = forced==='syncing' ? 'Syncing…' : !online ? `Offline${pending.length?` • ${pending.length} waiting`:''}` : pending.length ? `${pending.length} waiting to sync` : 'Online';
+      badge.textContent=text;
+      badge.className=`connection-badge ${forced==='syncing'?'syncing':!online?'offline':pending.length?'pending':'online'}`;
+    }
+  }
 
   function localDraftKey(assignmentId, assessmentId) {
     const userId = state.me?.user?.id || 'unknown';
@@ -86,15 +272,25 @@
   }
 
   async function api(path, opts = {}) {
+    const method = String(opts.method || 'GET').toUpperCase();
     const headers = { ...(opts.headers || {}) };
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
     if (opts.body && !(opts.body instanceof FormData)) headers['Content-Type'] = 'application/json';
     const body = opts.body && !(opts.body instanceof FormData) && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body;
-    const res = await fetch(path, { ...opts, headers, body, cache: 'no-store' });
-    const data = await res.json().catch(() => ({}));
-    if (res.status === 401) { logout(false); throw new Error(data.error || 'Session expired'); }
-    if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-    return data;
+    try {
+      const res = await fetch(path, { ...opts, method, headers, body, cache:'no-store' });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) { logout(false); const e=new Error(data.error || 'Session expired'); e.status=401; throw e; }
+      if (!res.ok) { const e=new Error(data.error || `Request failed (${res.status})`); e.status=res.status; throw e; }
+      if (method === 'GET' && path.startsWith('/api/') && !path.startsWith('/api/events') && !path.startsWith('/api/version')) await cacheApi(path, data);
+      return data;
+    } catch (err) {
+      if (!err.status && method === 'GET' && path.startsWith('/api/') && !path.startsWith('/api/version')) {
+        const cached = await readCachedApi(path);
+        if (cached) { updateConnectivityUi(); return cached; }
+      }
+      throw err;
+    }
   }
 
   async function checkVersion() {
@@ -123,6 +319,7 @@
   }
 
   function statusPill(status, deadline) {
+    if (status === 'SYNC_PENDING') return '<span class="pill pill-orange">Waiting to sync</span>';
     if (status === 'LOCKED') return '<span class="pill pill-violet">Locked</span>';
     if (status === 'SUBMITTED') return '<span class="pill pill-green">Submitted</span>';
     if (status === 'CORRECTION_REQUESTED') return '<span class="pill pill-orange">Correction requested</span>';
@@ -146,7 +343,7 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card simple-login-card">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V2.7</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V2.8</p></div></div>
           <div class="login-hero"><b>Welcome</b><span>Enter your name or staff ID to continue.</span></div>
           <form id="loginForm" class="simple-login-form">
             <div class="field"><label>Your name or staff ID</label><input id="identifier" list="staffSuggestions" autocomplete="username" placeholder="e.g. Kamanga or kamanga" required><datalist id="staffSuggestions"></datalist></div>
@@ -188,6 +385,8 @@
       await navigate(needsSetup ? 'profile' : 'dashboard');
       if (needsSetup) actionPopup('Set up your teaching profile','Choose what you teach and whether you are a class teacher. Your supervisor verifies it once.');
       checkVersion();
+      updateConnectivityUi();
+      if (navigator.onLine) { flushOutbox(true).then(()=>prepareTeacherOfflineData()); }
     } catch (err) {
       state.token = ''; localStorage.removeItem('edusend_token'); renderLogin(); toast(err.message, true);
     }
@@ -214,14 +413,14 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.7</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.8</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
         <main class="main">
           <header class="topbar">
             <div><h2 id="pageTitle">Home</h2><div class="tiny muted">${esc(state.me.school.name)} ${state.me.school.demoMode?'<span class="practice-badge">PRACTICE DATA</span>':''}</div></div>
-            <div class="topbar-actions"><button id="notifBell" class="icon-btn" aria-label="Notifications">🔔<span id="topUnread" class="counter hidden">0</span></button><div class="topbar-user"><div class="small"><b>${esc(u.name)}</b></div><button id="logoutTopBtn" class="btn btn-secondary btn-signout">Sign out</button></div></div>
+            <div class="topbar-actions"><span id="connectionBadge" class="connection-badge online">Online</span><button id="notifBell" class="icon-btn" aria-label="Notifications">🔔<span id="topUnread" class="counter hidden">0</span></button><div class="topbar-user"><div class="small"><b>${esc(u.name)}</b></div><button id="logoutTopBtn" class="btn btn-secondary btn-signout">Sign out</button></div></div>
           </header>
           <div id="content" class="content"></div>
         </main>
@@ -294,7 +493,7 @@
     if(isRole('HOD')) mainActions.push(actionTile('✓','Teaching Approvals','Approve teachers who claim subjects in your department.','hodClaims'),actionTile('◫','Results Status','See submitted and missing department results.','hodProgress'));
     if(isAdminOrHeadFront()) mainActions.push(actionTile('◉','School Results','See school-wide submission progress.','schoolProgress'),actionTile('✓','Approval Requests','Approve incomplete report release and class-teacher claims.','approvals'));
     content.innerHTML = `
-      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.7</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.8</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
       ${isRole('TEACHER')?deadlineBanner(rem.reminders):''}
       <div class="simple-summary">
         ${isRole('TEACHER')?`<div><b>${submitted}/${sheets.length||0}</b><span>result sheets submitted</span></div>`:''}
@@ -347,24 +546,33 @@
   }
 
   async function renderTeacher(content) {
-    const d = await api('/api/teacher/assignments');
+    const d = await offlineAssignmentOverlay(await api('/api/teacher/assignments'));
     const rows = d.assignments.flatMap(a => (a.sheets || []).map(s => ({ a, s })));
     content.innerHTML = `
       <div class="page-intro"><div><h3>Your result sheets</h3><p>Only classes and subjects assigned to you are visible.</p></div><span class="pill pill-blue">One-entry workflow</span></div>
+      <div class="offline-ready-card"><b>${navigator.onLine?'Offline-ready mark entry':'You are offline'}</b><span>${navigator.onLine?'Your assigned pupil lists are saved on this phone automatically. You can enter marks later without bundles.':'Enter marks normally. They stay on this phone and sync when internet returns.'}</span></div>
       ${rows.length ? `<div class="sheet-grid">${rows.map(({a,s}) => `
         <article class="sheet-card">
           <div class="sheet-card-top"><span class="class-chip">${esc(a.className)}</span>${statusPill(s.status,s.deadline)}</div>
           <h3>${esc(a.subjectName)}</h3><p>${esc(s.assessment.name)}</p>
           <div class="mini-metrics"><span><b>${s.entered}</b> entered</span><span><b>${s.pupilCount}</b> pupils</span></div>
           <div class="deadline-row"><span>${esc(s.deadline.text)}</span><span>${fmtDate(s.deadline.dueAt)}</span></div>
-          <button class="btn ${['SUBMITTED','LOCKED'].includes(s.status)?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${['SUBMITTED','LOCKED'].includes(s.status)?'View sheet':'Open & enter results'}</button>
+          <button class="btn ${['SUBMITTED','LOCKED'].includes(s.status)?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${['SUBMITTED','LOCKED'].includes(s.status)?'View sheet':s.status==='SYNC_PENDING'?'Open queued results':'Open & enter results'}</button>
         </article>`).join('')}</div>` : '<div class="empty">No class/subject has been assigned to you yet.</div>'}`;
     content.querySelectorAll('[data-open-sheet]').forEach(b => b.onclick = () => openResultSheet(b.dataset.openSheet, b.dataset.assessment));
   }
 
   async function openResultSheet(assignmentId, assessmentId) {
     const d = await api(`/api/teacher/sheet?assignmentId=${encodeURIComponent(assignmentId)}&assessmentId=${encodeURIComponent(assessmentId)}`);
-    const readOnly = ['SUBMITTED','LOCKED'].includes(d.sheet.status);
+    const queuedItem = (await pendingOutbox()).find(x=>x.payload?.assignmentId===assignmentId&&x.payload?.assessmentId===assessmentId);
+    if (queuedItem?.payload?.rows?.length) {
+      const lm={},ls={},ln={};
+      for (const row of queuedItem.payload.rows) { if(row.mark!==null&&row.mark!==''&&row.mark!==undefined) lm[row.pupilId]=Number(row.mark); ls[row.pupilId]=row.state||'PENDING'; if(row.note) ln[row.pupilId]=row.note; }
+      d.sheet.marks=lm; d.sheet.markStates=ls; d.sheet.markNotes=ln;
+    }
+    const localSubmitQueued = queuedItem?.payload?.action === 'submit';
+    if (localSubmitQueued) d.sheet.status='SYNC_PENDING';
+    const readOnly = ['SUBMITTED','LOCKED','SYNC_PENDING'].includes(d.sheet.status);
     let recovered=false, recoveredAt='';
     if(!readOnly){const local=readLocalDraft(assignmentId,assessmentId);const localTime=Date.parse(local?.savedAt||'');const serverTime=Date.parse(d.sheet.updatedAt||'')||0;if(local?.rows?.length&&Number.isFinite(localTime)&&localTime>serverTime){const lm={},ls={},ln={};for(const row of local.rows){if(row.mark!==null&&row.mark!==''&&row.mark!==undefined)lm[row.pupilId]=Number(row.mark);ls[row.pupilId]=row.state||'PENDING';if(row.note)ln[row.pupilId]=row.note;}d.sheet.marks=lm;d.sheet.markStates=ls;d.sheet.markNotes=ln;recovered=true;recoveredAt=local.savedAt;}}
     state.activeSheet=d;
@@ -376,9 +584,10 @@
     }).join('');
     showModal(`<div class="modal-head"><div><b>${esc(d.assignment.className)} — ${esc(d.assignment.subjectName)}</b><div class="tiny muted">${esc(d.assessment.name)} • ${esc(d.sheet.deadline.text)}</div></div><button class="close" data-close>×</button></div>
       <div class="modal-body"><div class="workflow-strip"><span>1. Type marks</span><span>2. Give a reason only where a mark is missing</span><span>3. Submit</span></div>
-      ${readOnly?'<div class="alert alert-green"><b>Submitted.</b> This sheet is now read-only unless a correction is requested.</div>':'<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>'}
+      ${!navigator.onLine?'<div class="alert alert-orange"><b>Offline mode.</b> You can keep entering marks. They are saved on this phone and will sync automatically when internet returns.</div>':queuedItem?'<div class="alert alert-orange"><b>Waiting to sync.</b> This phone has changes that have not reached the school server yet.</div>':''}
+      ${localSubmitQueued?'<div class="alert alert-orange"><b>Waiting to sync.</b> You already submitted these results on this phone. They will reach the class teacher when internet returns.</div>':readOnly?'<div class="alert alert-green"><b>Submitted.</b> This sheet is now read-only unless a correction is requested.</div>':'<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>'}
       ${recovered?`<div class="alert alert-orange"><b>Recovered draft.</b> Newer work from this device was restored (${fmtDate(recoveredAt)}).</div>`:''}
-      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${readOnly?'Submitted '+fmtDate(d.sheet.submittedAt):d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
+      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${localSubmitQueued?'✓ Saved on this phone • waiting to sync':readOnly?'Submitted '+fmtDate(d.sheet.submittedAt):queuedItem?'✓ Saved on this phone • waiting to sync':d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
       <div class="table-wrap"><table class="table result-entry simple-entry"><thead><tr><th>#</th><th>Pupil</th><th class="center">Mark %</th><th>If no mark</th></tr></thead><tbody>${rows}</tbody></table></div></div>
       <div class="modal-foot"><button class="btn btn-secondary" data-close>Close</button>${readOnly?'':`${state.me?.school?.demoMode?'<button type="button" id="fillDemoMarks" class="btn btn-gold">Fill demo marks</button>':''}<button type="button" id="submitResults" class="btn btn-green btn-lg">Submit Results</button>`}</div>`);
     if(!readOnly){
@@ -413,19 +622,61 @@
   }
 
   async function saveActiveSheet(action,silent) {
-    if(!state.activeSheet)return; clearTimeout(state.autosaveTimer); const current=state.activeSheet; const rows=collectSheetRows(); storeLocalDraft(rows);
+    if(!state.activeSheet)return;
+    clearTimeout(state.autosaveTimer);
+    const current=state.activeSheet;
+    const rows=collectSheetRows();
+    storeLocalDraft(rows);
     if(action==='submit'){
-      const unexplained=rows.filter(r=>r.mark===null&&!r.note); if(unexplained.length){actionPopup('Missing information',`${unexplained.length} pupil${unexplained.length===1?' has':'s have'} no mark and no reason. Enter a mark or choose a reason first.`,'error');return;}
-      if(!confirm(`Submit ${current.assignment.subjectName} results for ${current.assignment.className}? The class teacher and administration will see them immediately.`))return;
+      const unexplained=rows.filter(r=>r.mark===null&&!r.note);
+      if(unexplained.length){actionPopup('Missing information',`${unexplained.length} pupil${unexplained.length===1?' has':'s have'} no mark and no reason. Enter a mark or choose a reason first.`,'error');return;}
+      if(!confirm(`Submit ${current.assignment.subjectName} results for ${current.assignment.className}?${navigator.onLine?' The class teacher and administration will see them immediately.':' You are offline, so they will be sent automatically when internet returns.'}`))return;
     }
-    const submitBtn=byId('submitResults');if(submitBtn)submitBtn.disabled=true;const st=byId('autosaveStatus');if(st){st.textContent=action==='submit'?'Submitting results…':'Saving…';st.className='save-state syncing';}
+    const submitBtn=byId('submitResults'); if(submitBtn)submitBtn.disabled=true;
+    const st=byId('autosaveStatus'); if(st){st.textContent=action==='submit'?'Submitting results…':'Saving…';st.className='save-state syncing';}
+    const payload={assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,expectedRevision:current.sheet.revision};
+
+    const saveOffline = async (reason='') => {
+      await queueSheetChange(payload);
+      current.sheet.status = action==='submit' ? 'SYNC_PENDING' : 'DRAFT';
+      if(st){st.textContent=action==='submit'?'✓ Saved on this phone • will send when online':'✓ Saved on this phone • waiting to sync';st.className='save-state local-only';}
+      if(action==='submit'){
+        closeModal(true);
+        actionPopup('Saved for sending',`${current.assignment.subjectName} • ${current.assignment.className} is safely stored on this phone. It will be sent to the class teacher automatically when internet returns.`);
+        await navigate('teacher');
+      } else if(!silent && reason) actionPopup('Saved on this phone',`No internet connection is needed to keep entering marks. ${reason}`);
+    };
+
+    if(!navigator.onLine){
+      try{await saveOffline();}catch(e){if(!silent)actionPopup('Could not save offline',e.message,'error');}
+      finally{if(submitBtn)submitBtn.disabled=false;}
+      return;
+    }
+
     try{
-      const result=await api('/api/teacher/sheet',{method:'PUT',body:{assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,expectedRevision:current.sheet.revision}});
-      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status; storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'});
+      const result=await rawApi('/api/teacher/sheet',{method:'PUT',body:payload});
+      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status;
+      storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'});
+      await idbDelete('outbox',outboxKey(current.assignment.id,current.assessment.id)).catch(()=>{});
       if(st){st.textContent=action==='submit'?'✓ Submitted successfully':`✓ Saved ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;st.className='save-state saved';}
-      if(action==='submit'){const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);await navigate('teacher');}
-    }catch(err){if(st){st.textContent=`Not synced — ${err.message}`;st.className='save-state local-only';}if(err.message.includes('newer version'))actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');else if(!silent)actionPopup('Could not save to server',`Your latest typing is still kept on this device. ${err.message}`,'error');}
-    finally{if(submitBtn)submitBtn.disabled=false;}
+      if(action==='submit'){
+        const assignmentId=current.assignment.id,assessmentId=current.assessment.id;
+        removeLocalDraft(assignmentId,assessmentId); closeModal(true);
+        const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';
+        actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);
+        await navigate('teacher');
+      }
+      prepareTeacherOfflineData();
+    }catch(err){
+      const networkFailure=!err.status || /fetch|network|offline|failed/i.test(err.message||'');
+      if(networkFailure){
+        try{await saveOffline(err.message);}catch(e){if(st){st.textContent='Could not save';st.className='save-state local-only';}if(!silent)actionPopup('Could not save offline',e.message,'error');}
+      }else{
+        if(st){st.textContent=`Not saved — ${err.message}`;st.className='save-state local-only';}
+        if(err.message.includes('newer version')) actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');
+        else if(!silent) actionPopup('Could not save',err.message,'error');
+      }
+    } finally { if(submitBtn)submitBtn.disabled=false; updateConnectivityUi(); }
   }
 
   async function renderClassTeacher(content) {
@@ -757,6 +1008,10 @@
     state.notificationTimer=setInterval(refreshNotifications,30000);
   }
   function disconnectEvents(){if(state.eventSource){state.eventSource.close();state.eventSource=null}if(state.refreshTimer){clearInterval(state.refreshTimer);state.refreshTimer=null}if(state.notificationTimer){clearInterval(state.notificationTimer);state.notificationTimer=null}}
+
+  window.addEventListener('online',()=>{updateConnectivityUi('syncing');flushOutbox(true).then(()=>prepareTeacherOfflineData());});
+  window.addEventListener('offline',()=>{updateConnectivityUi();toast('Offline mode — marks will stay on this phone until internet returns');});
+  if('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message',e=>{if(e.data?.type==='EDUSEND_SYNC_REQUEST')flushOutbox(true);});
 
   window.addEventListener('pagehide', syncActiveDraftOnHide);
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')syncActiveDraftOnHide();});
