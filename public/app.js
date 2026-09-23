@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '3.0.1';
+  const APP_VERSION = '2.9.0';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -11,8 +11,7 @@
     notificationTimer: null,
     unread: 0,
     activeSheet: null,
-    autosaveTimer: null,
-    backgroundRefresh: null
+    autosaveTimer: null
   };
 
   const esc = (s) => String(s ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -56,7 +55,7 @@
   }
 
   function snapshotActiveDraft() {
-    if (!state.activeSheet || (['SUBMITTED','LOCKED'].includes(state.activeSheet.sheet?.status) && !state.activeSheet.correctionMode)) return null;
+    if (!state.activeSheet || ['SUBMITTED','LOCKED'].includes(state.activeSheet.sheet?.status)) return null;
     const markEls = [...document.querySelectorAll('[data-mark]')];
     if (!markEls.length) return null;
     const rows = collectSheetRows();
@@ -147,17 +146,20 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card simple-login-card">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V3.0.1</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V2.9</p></div></div>
           <div class="login-hero"><b>Welcome</b><span>Enter your name or staff ID to continue.</span></div>
           <form id="loginForm" class="simple-login-form">
             <div class="field"><label>Your name or staff ID</label><input id="identifier" list="staffSuggestions" autocomplete="username" placeholder="e.g. Kamanga or kamanga" required><datalist id="staffSuggestions"></datalist></div>
-            <div class="field"><label>PIN / password</label><input id="password" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Enter PIN or password" required></div>
+            <div class="field"><label>PIN / password</label><input id="password" type="password" autocomplete="current-password" placeholder="Enter PIN or password" required></div>
             <button class="btn btn-primary full btn-lg" type="submit">Continue</button>
           </form>
+          <button id="createTeacherAccount" class="btn btn-secondary full create-account-btn" type="button">Create teacher account</button>
+          <div class="login-help-text">New teacher? Create your account once. The school administrator approves it before you can enter results.</div>
           <div id="trainingHint" class="training-login-hint hidden"><b>Training mode</b><span>Practice accounts use PIN <code>1234</code>. Start typing a staff name above; the list appears only when you need it.</span></div>
         </div>
       </div>`;
     loadLoginSuggestions();
+    byId('createTeacherAccount').onclick=renderRegister;
     byId('loginForm').addEventListener('submit', async e => {
       e.preventDefault(); const btn=e.submitter||e.target.querySelector('button[type="submit"]'); btn.disabled=true; btn.textContent='Opening…';
       try {
@@ -165,6 +167,37 @@
         state.token=d.token; localStorage.setItem('edusend_token',state.token); await bootstrap();
       } catch(err){toast(err.message,true)} finally {btn.disabled=false;btn.textContent='Continue'}
     });
+  }
+
+  async function renderRegister() {
+    disconnectEvents();
+    let opts={departments:[]}; try{opts=await api('/api/register/options')}catch{}
+    app.innerHTML=`<div class="login-page"><div class="login-card simple-login-card">
+      <div class="brand"><div class="brand-mark">ES</div><div><h1>Create teacher account</h1><p>${esc(opts.schoolName||'Reportform ZM')}</p></div></div>
+      <div class="login-hero"><b>Teacher registration</b><span>Create your login. Administration verifies your account before any school results become accessible.</span></div>
+      <form id="registerForm" class="simple-login-form">
+        <div class="field"><label>Full name</label><input id="regName" autocomplete="name" placeholder="e.g. Pearson Kamanga" required></div>
+        <div class="field"><label>Staff ID / username</label><input id="regUsername" autocomplete="username" autocapitalize="none" placeholder="e.g. pkamanga" required></div>
+        <div class="field"><label>Phone number</label><input id="regPhone" inputmode="tel" autocomplete="tel" placeholder="School contact number"></div>
+        <div class="field"><label>Department</label><select id="regDepartment"><option value="">Not sure / select later</option>${(opts.departments||[]).map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>Create PIN / password</label><input id="regPassword" type="password" autocomplete="new-password" placeholder="At least 6 characters" required></div>
+        <div class="field"><label>Confirm PIN / password</label><input id="regConfirm" type="password" autocomplete="new-password" placeholder="Enter it again" required></div>
+        <button class="btn btn-primary full btn-lg" type="submit">Create account</button>
+      </form>
+      <button id="backToLogin" class="btn btn-secondary full create-account-btn" type="button">Back to sign in</button>
+      <div class="login-help-text">After approval, sign in and EduSend will ask which subjects and classes you teach.</div>
+    </div></div>`;
+    byId('backToLogin').onclick=renderLogin;
+    byId('registerForm').onsubmit=async e=>{
+      e.preventDefault();
+      if(byId('regPassword').value!==byId('regConfirm').value){toast('PIN/passwords do not match',true);return}
+      const btn=e.submitter||e.target.querySelector('button[type="submit"]');btn.disabled=true;btn.textContent='Sending request…';
+      try{
+        const r=await api('/api/register',{method:'POST',body:{name:byId('regName').value,username:byId('regUsername').value,phone:byId('regPhone').value,departmentId:byId('regDepartment').value||null,password:byId('regPassword').value}});
+        actionPopup('Account request sent',r.message||'Administration will approve your account.');
+        renderLogin();
+      }catch(err){toast(err.message,true);btn.disabled=false;btn.textContent='Create account'}
+    };
   }
 
   async function loadLoginSuggestions(){
@@ -215,7 +248,7 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V3.0.1</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.9</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
@@ -234,7 +267,6 @@
 
   async function navigate(page) {
     state.page = page;
-    state.backgroundRefresh = null;
     document.querySelectorAll('[data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === page));
     const titles = {
       dashboard:'Home', work:'My Work', notifications:'Notifications', more:'More', profile:'My Teaching Profile',
@@ -296,7 +328,7 @@
     if(isRole('HOD')) mainActions.push(actionTile('✓','Teaching Approvals','Approve teachers who claim subjects in your department.','hodClaims'),actionTile('◫','Results Status','See submitted and missing department results.','hodProgress'));
     if(isAdminOrHeadFront()) mainActions.push(actionTile('◉','School Results','See school-wide submission progress.','schoolProgress'),actionTile('✓','Approval Requests','Approve incomplete report release and class-teacher claims.','approvals'));
     content.innerHTML = `
-      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V3.0.1</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.9</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
       ${isRole('TEACHER')?deadlineBanner(rem.reminders):''}
       <div class="simple-summary">
         ${isRole('TEACHER')?`<div><b>${submitted}/${sheets.length||0}</b><span>result sheets submitted</span></div>`:''}
@@ -359,18 +391,14 @@
           <h3>${esc(a.subjectName)}</h3><p>${esc(s.assessment.name)}</p>
           <div class="mini-metrics"><span><b>${s.entered}</b> entered</span><span><b>${s.pupilCount}</b> pupils</span></div>
           <div class="deadline-row"><span>${esc(s.deadline.text)}</span><span>${fmtDate(s.deadline.dueAt)}</span></div>
-          <button class="btn ${s.status==='LOCKED'?'btn-secondary':s.status==='SUBMITTED'?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${s.status==='LOCKED'?'View locked sheet':s.status==='SUBMITTED'?'View / correct results':s.status==='CORRECTION_REQUESTED'?'Open correction request':'Open & enter results'}</button>
+          <button class="btn ${['SUBMITTED','LOCKED'].includes(s.status)?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${['SUBMITTED','LOCKED'].includes(s.status)?'View sheet':'Open & enter results'}</button>
         </article>`).join('')}</div>` : '<div class="empty">No class/subject has been assigned to you yet.</div>'}`;
     content.querySelectorAll('[data-open-sheet]').forEach(b => b.onclick = () => openResultSheet(b.dataset.openSheet, b.dataset.assessment));
   }
 
-  async function openResultSheet(assignmentId, assessmentId, correctionMode=false) {
+  async function openResultSheet(assignmentId, assessmentId) {
     const d = await api(`/api/teacher/sheet?assignmentId=${encodeURIComponent(assignmentId)}&assessmentId=${encodeURIComponent(assessmentId)}`);
-    const locked = d.sheet.status === 'LOCKED';
-    const submitted = ['SUBMITTED','CORRECTION_REQUESTED'].includes(d.sheet.status);
-    const effectiveCorrection = !locked && (correctionMode || d.sheet.status === 'CORRECTION_REQUESTED');
-    const readOnly = locked || (submitted && !effectiveCorrection);
-    d.correctionMode = effectiveCorrection;
+    const readOnly = ['SUBMITTED','LOCKED'].includes(d.sheet.status);
     let recovered=false, recoveredAt='';
     if(!readOnly){const local=readLocalDraft(assignmentId,assessmentId);const localTime=Date.parse(local?.savedAt||'');const serverTime=Date.parse(d.sheet.updatedAt||'')||0;if(local?.rows?.length&&Number.isFinite(localTime)&&localTime>serverTime){const lm={},ls={},ln={};for(const row of local.rows){if(row.mark!==null&&row.mark!==''&&row.mark!==undefined)lm[row.pupilId]=Number(row.mark);ls[row.pupilId]=row.state||'PENDING';if(row.note)ln[row.pupilId]=row.note;}d.sheet.marks=lm;d.sheet.markStates=ls;d.sheet.markNotes=ln;recovered=true;recoveredAt=local.savedAt;}}
     state.activeSheet=d;
@@ -380,36 +408,20 @@
       let reason=''; if(st==='ABSENT') reason='ABSENT'; else if(st==='PENDING'&&note) reason=note.toUpperCase().includes('PAPER')?'PAPER_MISSING':note.toUpperCase().includes('DID NOT')?'DID_NOT_WRITE':'PENDING';
       return `<tr><td>${i+1}</td><td><b>${esc(p.name)}</b>${p.isRepeater?'<span class="repeater-tag">Repeater</span>':''}<div class="tiny muted">${esc(p.examNo||'')}</div></td><td class="center"><input class="mark-input" data-mark="${p.id}" type="number" inputmode="decimal" min="0" max="100" step="0.1" value="${esc(mark)}" ${readOnly?'disabled':''}></td><td><select class="reason-select" data-reason="${p.id}" ${readOnly?'disabled':''}><option value="" ${!reason?'selected':''}>No special reason</option><option value="ABSENT" ${reason==='ABSENT'?'selected':''}>Absent</option><option value="DID_NOT_WRITE" ${reason==='DID_NOT_WRITE'?'selected':''}>Did not write</option><option value="PAPER_MISSING" ${reason==='PAPER_MISSING'?'selected':''}>Paper missing</option><option value="PENDING" ${reason==='PENDING'?'selected':''}>Mark pending</option></select></td></tr>`;
     }).join('');
-    const info = locked
-      ? '<div class="alert alert-orange"><b>Locked by administration.</b> You can view the results but cannot change them until the sheet is unlocked.</div>'
-      : effectiveCorrection
-        ? `<div class="alert alert-orange"><b>${d.sheet.status==='CORRECTION_REQUESTED'?'Correction requested.':'Correction mode.'}</b> Change only the wrong result. Your class teacher and administration will be notified.</div>`
-        : submitted
-          ? '<div class="alert alert-green"><b>Submitted.</b> These are your subject results. If you notice a mistake, use <b>Correct a Mistake</b>.</div>'
-          : '<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>';
     showModal(`<div class="modal-head"><div><b>${esc(d.assignment.className)} — ${esc(d.assignment.subjectName)}</b><div class="tiny muted">${esc(d.assessment.name)} • ${esc(d.sheet.deadline.text)}</div></div><button class="close" data-close>×</button></div>
-      <div class="modal-body"><div class="workflow-strip"><span>1. Type marks</span><span>2. Give a reason only where a mark is missing</span><span>3. ${effectiveCorrection?'Save correction':'Submit'}</span></div>
-      ${info}
-      ${recovered?`<div class="alert alert-orange"><b>Recovered work.</b> Newer work from this device was restored (${fmtDate(recoveredAt)}).</div>`:''}
-      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${readOnly?(locked?'Locked':'Submitted '+fmtDate(d.sheet.submittedAt)):effectiveCorrection?'Correction not saved yet':d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
-      <div class="table-wrap"><table class="table result-entry simple-entry"><thead><tr><th>#</th><th>Pupil</th><th class="center">Mark %</th><th>If no mark</th></tr></thead><tbody>${rows}</tbody></table></div>
-      ${effectiveCorrection?'<div class="field correction-reason"><label>Reason for correction</label><input id="correctionReason" maxlength="300" placeholder="Example: Entered 48 instead of 84 for one pupil"></div>':''}</div>
-      <div class="modal-foot"><button class="btn btn-secondary" data-close>${effectiveCorrection?'Cancel':'Close'}</button>${locked?'':submitted&&!effectiveCorrection?'<button type="button" id="startCorrection" class="btn btn-primary">Correct a Mistake</button>':effectiveCorrection?'<button type="button" id="saveCorrection" class="btn btn-green btn-lg">Save Correction</button>':`${state.me?.school?.demoMode?'<button type="button" id="fillDemoMarks" class="btn btn-gold">Fill demo marks</button>':''}<button type="button" id="submitResults" class="btn btn-green btn-lg">Submit Results</button>`}</div>`);
-    if(submitted&&!effectiveCorrection&&!locked){byId('startCorrection').onclick=()=>openResultSheet(assignmentId,assessmentId,true);return;}
+      <div class="modal-body"><div class="workflow-strip"><span>1. Type marks</span><span>2. Give a reason only where a mark is missing</span><span>3. Submit</span></div>
+      ${readOnly?'<div class="alert alert-green"><b>Submitted.</b> This sheet is now read-only unless a correction is requested.</div>':'<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>'}
+      ${recovered?`<div class="alert alert-orange"><b>Recovered draft.</b> Newer work from this device was restored (${fmtDate(recoveredAt)}).</div>`:''}
+      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${readOnly?'Submitted '+fmtDate(d.sheet.submittedAt):d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
+      <div class="table-wrap"><table class="table result-entry simple-entry"><thead><tr><th>#</th><th>Pupil</th><th class="center">Mark %</th><th>If no mark</th></tr></thead><tbody>${rows}</tbody></table></div></div>
+      <div class="modal-foot"><button class="btn btn-secondary" data-close>Close</button>${readOnly?'':`${state.me?.school?.demoMode?'<button type="button" id="fillDemoMarks" class="btn btn-gold">Fill demo marks</button>':''}<button type="button" id="submitResults" class="btn btn-green btn-lg">Submit Results</button>`}</div>`);
     if(!readOnly){
-      const changed=()=>{
-        snapshotActiveDraft();
-        if(effectiveCorrection){const st=byId('autosaveStatus');if(st){st.textContent='Correction not saved yet';st.className='save-state local-only';}}
-        else scheduleAutosave();
-      };
+      const changed=()=>{snapshotActiveDraft();scheduleAutosave();};
       document.querySelectorAll('[data-mark],[data-reason]').forEach(el=>{el.addEventListener('input',changed);el.addEventListener('change',changed)});
       document.querySelectorAll('[data-mark]').forEach(el=>el.addEventListener('input',()=>{if(el.value!==''){const r=document.querySelector(`[data-reason="${el.dataset.mark}"]`);if(r)r.value='';}}));
-      if(effectiveCorrection){byId('saveCorrection').onclick=()=>saveActiveSheet('correct',false);}
-      else{
-        if(byId('fillDemoMarks'))byId('fillDemoMarks').onclick=fillPracticeMarks;
-        byId('submitResults').onclick=()=>saveActiveSheet('submit',false);
-        if(recovered)setTimeout(()=>saveActiveSheet('draft',true),150);
-      }
+      if(byId('fillDemoMarks'))byId('fillDemoMarks').onclick=fillPracticeMarks;
+      byId('submitResults').onclick=()=>saveActiveSheet('submit',false);
+      if(recovered)setTimeout(()=>saveActiveSheet('draft',true),150);
     }
   }
 
@@ -436,30 +448,17 @@
 
   async function saveActiveSheet(action,silent) {
     if(!state.activeSheet)return; clearTimeout(state.autosaveTimer); const current=state.activeSheet; const rows=collectSheetRows(); storeLocalDraft(rows);
-    let correctionReason='';
-    if(action==='submit'||action==='correct'){
-      const unexplained=rows.filter(r=>r.mark===null&&!r.note); if(unexplained.length){actionPopup('Missing information',`${unexplained.length} pupil${unexplained.length===1?' has':'s have'} no mark and no reason. Enter a mark or choose a reason first.`,'error');return;}
-    }
     if(action==='submit'){
+      const unexplained=rows.filter(r=>r.mark===null&&!r.note); if(unexplained.length){actionPopup('Missing information',`${unexplained.length} pupil${unexplained.length===1?' has':'s have'} no mark and no reason. Enter a mark or choose a reason first.`,'error');return;}
       if(!confirm(`Submit ${current.assignment.subjectName} results for ${current.assignment.className}? The class teacher and administration will see them immediately.`))return;
     }
-    if(action==='correct'){
-      correctionReason=String(byId('correctionReason')?.value||'').trim();
-      if(correctionReason.length<3){actionPopup('Reason required','Briefly state why you are correcting the submitted results.','error');byId('correctionReason')?.focus();return;}
-      if(!confirm(`Save this correction to ${current.assignment.subjectName}? The class teacher and administration will be notified.`))return;
-    }
-    const submitBtn=action==='correct'?byId('saveCorrection'):byId('submitResults');if(submitBtn)submitBtn.disabled=true;const st=byId('autosaveStatus');if(st){st.textContent=action==='submit'?'Submitting results…':action==='correct'?'Saving correction…':'Saving…';st.className='save-state syncing';}
+    const submitBtn=byId('submitResults');if(submitBtn)submitBtn.disabled=true;const st=byId('autosaveStatus');if(st){st.textContent=action==='submit'?'Submitting results…':'Saving…';st.className='save-state syncing';}
     try{
-      const result=await api('/api/teacher/sheet',{method:'PUT',body:{assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,correctionReason,expectedRevision:current.sheet.revision}});
-      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status; storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'||action==='correct'});
-      if(st){st.textContent=action==='submit'?'✓ Submitted successfully':action==='correct'?'✓ Correction saved':`✓ Saved ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;st.className='save-state saved';}
-      if(action==='submit'){
-        const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);await navigate('teacher');
-      }
-      if(action==='correct'){
-        const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const c=result.correction||{};const resend=c.affectedSentReports?` ${c.affectedSentReports} affected pupil report${c.affectedSentReports===1?' was':'s were'} already sent/shared; the class teacher has been warned that a corrected report may need to be resent.`:'';actionPopup('Correction saved',`${c.changedCount||1} result${(c.changedCount||1)===1?'':'s'} corrected. The class teacher and administration were notified.${resend}`);await navigate('teacher');
-      }
-    }catch(err){if(st){st.textContent=`Not synced — ${err.message}`;st.className='save-state local-only';}if(err.message.includes('newer version'))actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');else if(!silent)actionPopup(action==='correct'?'Could not save correction':'Could not save to server',`Your latest typing is still kept on this device. ${err.message}`,'error');}
+      const result=await api('/api/teacher/sheet',{method:'PUT',body:{assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,expectedRevision:current.sheet.revision}});
+      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status; storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'});
+      if(st){st.textContent=action==='submit'?'✓ Submitted successfully':`✓ Saved ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;st.className='save-state saved';}
+      if(action==='submit'){const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);await navigate('teacher');}
+    }catch(err){if(st){st.textContent=`Not synced — ${err.message}`;st.className='save-state local-only';}if(err.message.includes('newer version'))actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');else if(!silent)actionPopup('Could not save to server',`Your latest typing is still kept on this device. ${err.message}`,'error');}
     finally{if(submitBtn)submitBtn.disabled=false;}
   }
 
@@ -469,15 +468,10 @@
     content.innerHTML = `<div class="toolbar premium-toolbar"><select id="classSelect">${classes.map(c=>`<option value="${c.id}">${esc(c.name)} • ${esc(c.gradingSystem)}</option>`).join('')}</select><select id="assessmentSelect">${state.assessments.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><button id="refreshClass" class="btn btn-secondary">Refresh</button><button id="goReports" class="btn btn-primary">Open Report Centre</button></div><div id="classOverview"></div>`;
     const load = () => loadClassOverview(byId('classSelect').value, byId('assessmentSelect').value);
     byId('classSelect').onchange = load; byId('assessmentSelect').onchange = load; byId('refreshClass').onclick = load; byId('goReports').onclick = () => navigate('reports'); await load();
-    state.backgroundRefresh=()=>{const c=byId('classSelect'),a=byId('assessmentSelect');if(c&&a)return loadClassOverview(c.value,a.value,{silent:true});};
   }
 
-  async function loadClassOverview(classId, assessmentId, options={}) {
-    const h=byId('classOverview');if(!h)return;
-    const silent=!!options.silent;
-    const previousScroll=window.scrollY;
-    const masterWasOpen=!!h.querySelector('details')?.open;
-    if(!silent && !h.innerHTML.trim()) h.innerHTML='<div class="loading-card">Loading class results…</div>';
+  async function loadClassOverview(classId, assessmentId) {
+    const h=byId('classOverview');if(!h)return;h.innerHTML='<div class="loading-card">Loading class results…</div>';
     const d=await api(`/api/class-teacher/overview?classId=${encodeURIComponent(classId)}&assessmentId=${encodeURIComponent(assessmentId)}`); const r=d.reportReadiness; const pct=r.totalSubjects?Math.round(r.submittedSubjects/r.totalSubjects*100):0;
     const subjects=d.subjects.map(s=>{const visible=['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(s.status);return `<article class="subject-progress-card"><div><b>${esc(s.subjectName)}</b><small>${esc(s.teacherName||'Unassigned')}${s.teacherPhone?` • ${esc(s.teacherPhone)}`:''}</small></div>${statusPill(s.status,s.deadline)}<div class="subject-actions">${visible?`<button class="action-link" data-view-results="${s.assignmentId}">View</button><button class="action-link" data-correct="${s.assignmentId}">Request correction</button>`:`<button class="action-link" data-ask="${s.assignmentId}">Ask teacher</button>${s.teacherPhone?`<a class="action-link" href="tel:${esc(s.teacherPhone)}">Call</a>`:''}<button class="action-link" data-escalate="${s.assignmentId}">Escalate</button>`}</div></article>`}).join('');
     const heads=d.subjects.map(s=>`<th class="center">${esc(s.subjectName)}</th>`).join('');
@@ -490,8 +484,6 @@
     h.querySelectorAll('[data-escalate]').forEach(b=>b.onclick=()=>escalateMissing(b.dataset.escalate,assessmentId));
     h.querySelectorAll('[data-correct]').forEach(b=>b.onclick=()=>requestCorrection(b.dataset.correct,assessmentId));
     h.querySelectorAll('[data-ask]').forEach(b=>b.onclick=()=>askTeacher(b.dataset.ask,assessmentId));
-    if(masterWasOpen){const d=h.querySelector('details');if(d)d.open=true;}
-    if(silent) requestAnimationFrame(()=>window.scrollTo({top:previousScroll,left:0,behavior:'auto'}));
   }
 
   async function openReadOnlyResults(assignmentId, assessmentId) {
@@ -641,14 +633,11 @@
 
   async function renderHodProgress(content) {
     if(!state.assessments.length){content.innerHTML='<div class="empty">No assessment.</div>';return;}
-    content.innerHTML=`<div class="toolbar premium-toolbar"><select id="hodAssess">${state.assessments.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><button id="hodRefresh" class="btn btn-secondary">Refresh</button></div><div id="hodProgressBody"></div>`;
-    const load=async(options={})=>{const silent=!!options.silent;const previousScroll=window.scrollY;const assessmentId=byId('hodAssess')?.value;if(!assessmentId)return;const d=await api(`/api/hod/progress?assessmentId=${encodeURIComponent(assessmentId)}`);const done=d.rows.filter(r=>['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status)).length;const overdue=d.rows.filter(r=>r.deadline.code==='OVERDUE').length;const body=byId('hodProgressBody');if(!body)return;body.innerHTML=`<div class="grid grid-3"><div class="card"><div class="stat">${done}/${d.rows.length}</div><div class="stat-label">Submitted</div></div><div class="card"><div class="stat">${overdue}</div><div class="stat-label">Overdue</div></div><div class="card"><div class="stat">${d.rows.length-done}</div><div class="stat-label">Outstanding</div></div></div><div class="table-wrap space-top"><table class="table"><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th>Deadline</th><th></th></tr></thead><tbody>${d.rows.map(r=>{const visible=['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status);return `<tr><td>${esc(r.className)}</td><td><b>${esc(r.subjectName)}</b></td><td>${esc(r.teacherName)}</td><td>${statusPill(r.status,r.deadline)}</td><td>${fmtDate(r.deadline.dueAt)}</td><td>${visible?`<button class="action-link" data-view-hod="${r.id}">View marks</button>`:'—'}</td></tr>`}).join('')}</tbody></table></div>`;body.querySelectorAll('[data-view-hod]').forEach(b=>b.onclick=()=>openReadOnlyResults(b.dataset.viewHod,assessmentId));if(silent)requestAnimationFrame(()=>window.scrollTo({top:previousScroll,left:0,behavior:'auto'}));};
-    byId('hodAssess').onchange=()=>load();byId('hodRefresh').onclick=()=>load();await load();
-    state.backgroundRefresh=()=>load({silent:true});
+    content.innerHTML=`<div class="toolbar premium-toolbar"><select id="hodAssess">${state.assessments.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div><div id="hodProgressBody"></div>`;
+    const load=async()=>{const assessmentId=byId('hodAssess').value;const d=await api(`/api/hod/progress?assessmentId=${encodeURIComponent(assessmentId)}`);const done=d.rows.filter(r=>['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status)).length;const overdue=d.rows.filter(r=>r.deadline.code==='OVERDUE').length;byId('hodProgressBody').innerHTML=`<div class="grid grid-3"><div class="card"><div class="stat">${done}/${d.rows.length}</div><div class="stat-label">Submitted</div></div><div class="card"><div class="stat">${overdue}</div><div class="stat-label">Overdue</div></div><div class="card"><div class="stat">${d.rows.length-done}</div><div class="stat-label">Outstanding</div></div></div><div class="table-wrap space-top"><table class="table"><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th>Deadline</th><th></th></tr></thead><tbody>${d.rows.map(r=>{const visible=['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status);return `<tr><td>${esc(r.className)}</td><td><b>${esc(r.subjectName)}</b></td><td>${esc(r.teacherName)}</td><td>${statusPill(r.status,r.deadline)}</td><td>${fmtDate(r.deadline.dueAt)}</td><td>${visible?`<button class="action-link" data-view-hod="${r.id}">View marks</button>`:'—'}</td></tr>`}).join('')}</tbody></table></div>`;byId('hodProgressBody').querySelectorAll('[data-view-hod]').forEach(b=>b.onclick=()=>openReadOnlyResults(b.dataset.viewHod,assessmentId));};byId('hodAssess').onchange=load;await load();
   }
 
-  async function renderEscalations(content, options={}) {
-    const silent=!!options.silent; const previousScroll=window.scrollY;
+  async function renderEscalations(content) {
     const d=await api('/api/escalations');
     content.innerHTML=`<div class="page-intro"><div><h3>Escalations</h3><p>Outstanding results move through class teacher → HOD → Administration without being hidden.</p></div></div><div class="escalation-list">${d.escalations.length?d.escalations.map(e=>`<article class="escalation-card"><div class="escalation-head"><div><span class="class-chip">${esc(e.assignment?.className||'')}</span><b>${esc(e.assignment?.subjectName||'')}</b><small>${esc(e.assignment?.teacherName||'')}</small></div><span class="pill pill-orange">${esc(e.status)}</span></div><p>${esc(e.note||'No note')}</p><div class="tiny muted">${esc(e.assessment?.name||'')} • Opened ${fmtDate(e.createdAt)}</div><div class="escalation-actions">${isRole('HOD')?`<button class="btn btn-secondary" data-hod-follow="${e.id}">Follow up teacher</button>`:''}${isRole('ADMIN')?`<button class="btn btn-secondary" data-remind-hod="${e.id}">Send to HOD</button><button class="btn btn-secondary" data-extend="${e.id}">Extend deadline</button><button class="btn btn-gold" data-provisional="${e.id}">Authorize provisional report</button><button class="btn btn-green" data-resolve="${e.id}">Resolve</button>`:''}</div></article>`).join(''):'<div class="empty">No escalations.</div>'}</div>`;
     content.querySelectorAll('[data-hod-follow]').forEach(b=>b.onclick=()=>hodFollow(b.dataset.hodFollow));
@@ -656,8 +645,6 @@
     content.querySelectorAll('[data-provisional]').forEach(b=>b.onclick=()=>adminEsc(b.dataset.provisional,'AUTHORIZE_PROVISIONAL'));
     content.querySelectorAll('[data-resolve]').forEach(b=>b.onclick=()=>adminEsc(b.dataset.resolve,'RESOLVE'));
     content.querySelectorAll('[data-extend]').forEach(b=>b.onclick=()=>extendDeadline(b.dataset.extend));
-    if(silent) requestAnimationFrame(()=>window.scrollTo({top:previousScroll,left:0,behavior:'auto'}));
-    state.backgroundRefresh=()=>renderEscalations(content,{silent:true});
   }
   async function hodFollow(id){const note=prompt('Message to the teacher:','Please submit the outstanding results as soon as possible.');if(note===null)return;try{await api('/api/hod/escalation-action',{method:'POST',body:{escalationId:id,note}});toast('Teacher notified');await navigate('escalations')}catch(e){toast(e.message,true)}}
   async function adminEsc(id,action){const note=prompt(action==='AUTHORIZE_PROVISIONAL'?'Reason for provisional release:':'Optional note:','');if(note===null)return;try{await api('/api/admin/escalation-action',{method:'POST',body:{escalationId:id,action,note}});toast('Escalation updated');await navigate('escalations')}catch(e){toast(e.message,true)}}
@@ -685,7 +672,7 @@
   }
 
   async function renderAdmin(content) {
-    const [d,storage]=await Promise.all([api('/api/admin/setup'),api('/api/admin/storage-status')]); const teachers=d.users.filter(u=>(u.roles||[]).includes('TEACHER'));
+    const d=await api('/api/admin/setup'); const teachers=d.users.filter(u=>(u.roles||[]).includes('TEACHER'));
     const classStaffing=d.classes.map(c=>{
       const rows=d.teachingAssignments.filter(a=>a.classId===c.id);
       const groups=new Map();
@@ -699,7 +686,7 @@
     const classTeachersAssigned=classStaffing.filter(x=>!!x.classTeacher).length;
     const teachingStaffWithLoad=teachers.filter(t=>d.teachingAssignments.some(a=>a.teacherUserId===t.id)).length;
     content.innerHTML=`<div class="admin-hero"><div><span class="eyebrow">ADMIN CONTROL CENTRE</span><h2>Configure the school once</h2><p>The administrator creates the structure and officially assigns each class teacher. EduSend recognizes that role immediately.</p></div><button id="backupBtn" class="btn btn-gold">Download data backup</button></div>
-    <div class="storage-safety-card ${storage.productionReady?'protected':'warning'}"><div><span class="eyebrow">DATA SAFETY</span><h3>${storage.productionReady?'PostgreSQL storage protected':'Temporary local storage'}</h3><p>${storage.productionReady?'School data is being saved in PostgreSQL and survives app redeploys/restarts.':'DATABASE_URL is not connected yet. Do not use this mode for permanent school records.'}</p><small>Revision ${storage.revision||0} • Last saved ${storage.lastSavedAt?fmtDate(storage.lastSavedAt):'Not yet'}${storage.entityCount?` • ${storage.entityCount} database records`:''}${storage.snapshotCount?` • ${storage.snapshotCount} recovery snapshots`:''}</small></div><div class="storage-actions"><label class="btn btn-secondary file-btn">Choose backup<input id="restoreBackupFile" type="file" accept="application/json,.json" hidden></label><button id="restoreBackupBtn" class="btn btn-secondary">Restore backup</button></div></div>
+    ${(d.pendingRegistrations||[]).length?`<div class="card account-requests-card"><div class="section-title"><div><span class="eyebrow">NEW TEACHER ACCOUNTS</span><h3 style="margin-top:4px">${d.pendingRegistrations.length} account request${d.pendingRegistrations.length===1?'':'s'} waiting</h3></div><span class="pill pill-orange">Approval required</span></div><p class="small muted">Check the staff member before approving. Approval creates a normal teacher account; subject and class access are still verified separately.</p>${d.pendingRegistrations.map(r=>{const dep=d.departments.find(x=>x.id===r.departmentId);return `<div class="account-request-row"><div><b>${esc(r.name)}</b><div class="tiny muted">Staff ID: ${esc(r.username)}${r.phone?` • ${esc(r.phone)}`:''}${dep?` • ${esc(dep.name)}`:''}</div></div><div class="inline"><button class="btn btn-green" data-reg-approve="${r.id}">Approve</button><button class="btn btn-danger" data-reg-decline="${r.id}">Decline</button></div></div>`}).join('')}</div>`:''}
     <div class="demo-loader-card"><div><span class="eyebrow">ORIENTATION MODE</span><h3>Lumezi practice school</h3><p>Load 2 classes, 10 fictional pupils, 10 staff and five subjects per class so you can practise the complete workflow quickly.</p></div><button id="loadDemoBtn" class="btn btn-primary">${d.school.demoMode?'Reset practice school':'Load practice school'}</button></div>
     ${d.school.demoMode?`<div class="practice-results-card"><div><span class="eyebrow">FAST TESTING</span><h3>Generate practice results automatically</h3><p>You do not need to type every mark. Create a mixed school scenario, submit every subject instantly, or clear only the practice results and start again. These tools never change staff, classes or pupils.</p></div><div class="practice-result-actions"><button id="practiceMixedBtn" class="btn btn-secondary">Create mixed scenario</button><button id="practiceSubmitAllBtn" class="btn btn-green">Submit all practice results</button><button id="practiceClearBtn" class="btn btn-danger-soft">Clear practice results</button></div></div>`:''}
     <div class="grid grid-4 staffing-health">
@@ -722,6 +709,14 @@
     <div id="classTeacherCentre" class="card space-top"><div class="section-title"><div><span class="eyebrow">CLASS TEACHER ASSIGNMENT CENTRE</span><h3 style="margin-top:4px">One official class teacher per class</h3></div><span class="pill pill-blue">Administrator controlled</span></div><p class="small muted">Choose a teacher and press Assign / Change. EduSend updates the teacher's permissions automatically and sends a notification.</p><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Current class teacher</th><th>Assign / change to</th><th></th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${t?`<span class="pill pill-green">${esc(t.name)}</span>`:'<span class="pill pill-orange">Not assigned</span>'}</td><td><select id="ctPick_${c.id}"><option value="">— Not assigned —</option>${teachers.map(x=>`<option value="${x.id}" ${x.id===c.classTeacherUserId?'selected':''}>${esc(x.name)}</option>`).join('')}</select></td><td><button class="btn btn-secondary" data-set-ct="${c.id}">${t?'Change':'Assign'}</button></td></tr>`}).join('')}</tbody></table></div></div>
     <div class="card space-top"><div class="section-title"><div><span class="eyebrow">STAFF & TEACHING LOAD</span><h3 style="margin-top:4px">Practice teacher directory</h3></div><span class="pill pill-blue">${teachers.length} teachers</span></div><p class="small muted">The training school is deliberately small. The same teacher may teach both classes, just as in a real timetable. All practice accounts use PIN <b>1234</b>.</p><div class="table-wrap"><table class="table"><thead><tr><th>Teacher</th><th>Username</th><th>Department</th><th>Teaching load</th><th>Class teacher of</th></tr></thead><tbody>${teachers.map(t=>{const loads=d.teachingAssignments.filter(a=>a.teacherUserId===t.id);const cls=d.classes.filter(c=>c.classTeacherUserId===t.id).map(c=>c.name);const dep=d.departments.find(x=>x.id===t.departmentId);return `<tr><td><b>${esc(t.name)}</b></td><td><code>${esc(t.username)}</code></td><td>${esc(dep?.name||'Multi-department')}</td><td>${loads.length?loads.map(a=>`${esc(a.className)} ${esc(a.subjectName)}`).join('<br>'):'—'}</td><td>${cls.length?esc(cls.join(', ')):'—'}</td></tr>`}).join('')}</tbody></table></div></div><div class="card space-top"><h3>Classes</h3><div class="table-wrap"><table class="table"><thead><tr><th>Class</th><th>Level</th><th>Grading</th><th>Class teacher</th></tr></thead><tbody>${d.classes.map(c=>{const t=d.users.find(u=>u.id===c.classTeacherUserId);return `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.level)}</td><td>${esc(c.gradingSystem)}</td><td>${esc(t?.name||'Not assigned')}</td></tr>`}).join('')}</tbody></table></div></div>`;
     wireAdminForms(content,d);
+    content.querySelectorAll('[data-reg-approve]').forEach(btn=>btn.onclick=async()=>{
+      btn.disabled=true;
+      try{const r=await api('/api/admin/registration-decide',{method:'POST',body:{userId:btn.dataset.regApprove,approve:true}});actionPopup('Teacher account approved',`${r.user.name} can now sign in. EduSend will ask them to set up their teaching profile.`);await renderAdmin(content)}catch(err){toast(err.message,true);btn.disabled=false}
+    });
+    content.querySelectorAll('[data-reg-decline]').forEach(btn=>btn.onclick=async()=>{
+      if(!confirm('Decline this teacher account request?'))return;btn.disabled=true;
+      try{await api('/api/admin/registration-decide',{method:'POST',body:{userId:btn.dataset.regDecline,approve:false}});toast('Account request declined');await renderAdmin(content)}catch(err){toast(err.message,true);btn.disabled=false}
+    });
     content.querySelector('[data-jump-ct]')?.addEventListener('click',()=>byId('classTeacherCentre')?.scrollIntoView({behavior:'smooth',block:'start'}));
     content.querySelectorAll('[data-set-ct]').forEach(btn=>btn.addEventListener('click',async()=>{
       const classId=btn.dataset.setCt; const picker=byId(`ctPick_${classId}`); const teacherUserId=picker?.value||null;
@@ -772,19 +767,11 @@
     byId('schoolForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/admin/school',{method:'POST',body:{name:byId('schoolName').value,motto:byId('schoolMotto').value,address:byId('schoolAddress').value,email:byId('schoolEmail').value}});toast('School details saved');await bootstrap()}catch(err){toast(err.message,true)}};
     byId('importCsv').onclick=()=>importCsvPupils();
     byId('backupBtn').onclick=async()=>{try{const x=await api('/api/admin/backup');const blob=new Blob([JSON.stringify(x,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`EduSend_Backup_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href);toast('Backup downloaded')}catch(e){toast(e.message,true)}};
-    byId('restoreBackupBtn').onclick=async()=>{const f=byId('restoreBackupFile')?.files?.[0];if(!f){toast('Choose an EduSend JSON backup first',true);return}if(!confirm('Restore this backup into the school database? Current data will be replaced by the backup contents.'))return;const phrase=prompt('Type RESTORE BACKUP to continue:','');if(phrase!=='RESTORE BACKUP'){toast('Restore cancelled',true);return}try{const parsed=JSON.parse(await f.text());const r=await api('/api/admin/restore-backup',{method:'POST',body:{confirm:phrase,data:parsed}});actionPopup('Backup restored',`Database revision ${r.storage?.revision||''} saved successfully.`);await bootstrap()}catch(e){actionPopup('Restore failed',e.message,'error')}};
   }
 
   async function importCsvPupils(){const f=byId('csvFile').files?.[0];if(!f){toast('Choose a CSV file first',true);return}const text=await f.text();const lines=text.split(/\r?\n/).filter(Boolean);if(lines.length<2){toast('CSV has no pupil rows',true);return}const headers=lines[0].split(',').map(x=>x.trim());const rows=lines.slice(1).map(line=>{const vals=line.split(',').map(x=>x.trim().replace(/^"|"$/g,''));const o={};headers.forEach((h,i)=>o[h]=vals[i]||'');return o});try{const r=await api('/api/admin/pupils-bulk',{method:'POST',body:{classId:byId('csvClass').value,pupils:rows}});toast(`${r.count} pupils imported`)}catch(e){toast(e.message,true)}}
 
-  async function renderSchoolProgress(content){
-    if(!state.assessments.length){content.innerHTML='<div class="empty">No assessment.</div>';return;}
-    content.innerHTML=`<div class="toolbar premium-toolbar"><select id="schoolAssess">${state.assessments.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select><button id="schoolRefresh" class="btn btn-secondary">Refresh</button></div><div id="schoolProgressBody"></div>`;
-    const load=async(options={})=>{const silent=!!options.silent;const previousScroll=window.scrollY;const assessmentId=byId('schoolAssess')?.value;if(!assessmentId)return;const d=await api(`/api/school/progress?assessmentId=${encodeURIComponent(assessmentId)}`);const done=d.rows.filter(r=>['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status)).length;const overdue=d.rows.filter(r=>r.deadline.code==='OVERDUE').length;const body=byId('schoolProgressBody');if(!body)return;body.innerHTML=`<div class="grid grid-3"><div class="card"><div class="stat">${done}/${d.rows.length}</div><div class="stat-label">School sheets received</div></div><div class="card"><div class="stat">${overdue}</div><div class="stat-label">Overdue</div></div><div class="card"><div class="stat">${d.classes.filter(c=>c.readiness.finalReady).length}/${d.classes.length}</div><div class="stat-label">Classes report-ready</div></div></div><div class="class-readiness-grid space-top">${d.classes.map(x=>`<div class="card"><b>${esc(x.class.name)}</b><div class="progressbar"><span style="width:${x.readiness.totalSubjects?Math.round(x.readiness.submittedSubjects/x.readiness.totalSubjects*100):0}%"></span></div><small>${x.readiness.submittedSubjects}/${x.readiness.totalSubjects} subjects • ${x.readiness.finalReady?'Ready':x.readiness.provisionalAllowed?'Provisional approved':'Waiting'}</small></div>`).join('')}</div><div class="table-wrap space-top"><table class="table"><thead><tr><th>Department</th><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th>Deadline</th><th></th></tr></thead><tbody>${d.rows.map(r=>{const visible=['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status);return `<tr><td>${esc(r.departmentName)}</td><td>${esc(r.className)}</td><td><b>${esc(r.subjectName)}</b></td><td>${esc(r.teacherName)}</td><td>${statusPill(r.status,r.deadline)}</td><td>${fmtDate(r.deadline.dueAt)}</td><td>${visible?`<button class="action-link" data-view-admin="${r.id}">View marks</button>`:'—'}</td></tr>`}).join('')}</tbody></table></div>`;body.querySelectorAll('[data-view-admin]').forEach(b=>b.onclick=()=>openReadOnlyResults(b.dataset.viewAdmin,assessmentId));if(silent)requestAnimationFrame(()=>window.scrollTo({top:previousScroll,left:0,behavior:'auto'}));};
-    byId('schoolAssess').onchange=()=>load();byId('schoolRefresh').onclick=()=>load();await load();
-    state.backgroundRefresh=()=>load({silent:true});
-  }
-
+  async function renderSchoolProgress(content){if(!state.assessments.length){content.innerHTML='<div class="empty">No assessment.</div>';return;}content.innerHTML=`<div class="toolbar premium-toolbar"><select id="schoolAssess">${state.assessments.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></div><div id="schoolProgressBody"></div>`;const load=async()=>{const assessmentId=byId('schoolAssess').value;const d=await api(`/api/school/progress?assessmentId=${encodeURIComponent(assessmentId)}`);const done=d.rows.filter(r=>['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status)).length;const overdue=d.rows.filter(r=>r.deadline.code==='OVERDUE').length;byId('schoolProgressBody').innerHTML=`<div class="grid grid-3"><div class="card"><div class="stat">${done}/${d.rows.length}</div><div class="stat-label">School sheets received</div></div><div class="card"><div class="stat">${overdue}</div><div class="stat-label">Overdue</div></div><div class="card"><div class="stat">${d.classes.filter(c=>c.readiness.finalReady).length}/${d.classes.length}</div><div class="stat-label">Classes report-ready</div></div></div><div class="class-readiness-grid space-top">${d.classes.map(x=>`<div class="card"><b>${esc(x.class.name)}</b><div class="progressbar"><span style="width:${x.readiness.totalSubjects?Math.round(x.readiness.submittedSubjects/x.readiness.totalSubjects*100):0}%"></span></div><small>${x.readiness.submittedSubjects}/${x.readiness.totalSubjects} subjects • ${x.readiness.finalReady?'Ready':x.readiness.provisionalAllowed?'Provisional approved':'Waiting'}</small></div>`).join('')}</div><div class="table-wrap space-top"><table class="table"><thead><tr><th>Department</th><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th>Deadline</th><th></th></tr></thead><tbody>${d.rows.map(r=>{const visible=['SUBMITTED','LOCKED','CORRECTION_REQUESTED'].includes(r.status);return `<tr><td>${esc(r.departmentName)}</td><td>${esc(r.className)}</td><td><b>${esc(r.subjectName)}</b></td><td>${esc(r.teacherName)}</td><td>${statusPill(r.status,r.deadline)}</td><td>${fmtDate(r.deadline.dueAt)}</td><td>${visible?`<button class="action-link" data-view-admin="${r.id}">View marks</button>`:'—'}</td></tr>`}).join('')}</tbody></table></div>`;byId('schoolProgressBody').querySelectorAll('[data-view-admin]').forEach(b=>b.onclick=()=>openReadOnlyResults(b.dataset.viewAdmin,assessmentId));};byId('schoolAssess').onchange=load;await load();}
 
   async function renderAudit(content){const d=await api('/api/admin/audit');content.innerHTML=`<div class="page-intro"><div><h3>Audit trail</h3><p>Who changed what, and when.</p></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th></tr></thead><tbody>${d.rows.map(r=>`<tr><td>${fmtDate(r.at)}</td><td>${esc(r.actorName)}</td><td><b>${esc(r.action)}</b></td><td>${esc(r.detail)}</td></tr>`).join('')}</tbody></table></div>`;}
 
@@ -804,13 +791,13 @@
       if(d.type==='CLASS_TEACHER_UPDATED'){
         try{const fresh=await api('/api/me');state.me=fresh;renderShell();await refreshNotifications();await navigate('dashboard');toast('Your class-teacher access has been updated');}catch{}
       }
-      const resultChanged=d.type==='RESULT_SHEET_UPDATED';
-      const escalationChanged=d.type==='ESCALATION_UPDATED';
-      if((resultChanged||escalationChanged) && typeof state.backgroundRefresh==='function') state.backgroundRefresh().catch?.(()=>{});
+      if(state.page==='classTeacher'&&d.type==='RESULT_SHEET_UPDATED'){const c=byId('classSelect'),a=byId('assessmentSelect');if(c&&a)loadClassOverview(c.value,a.value).catch(()=>{})}
+      if(state.page==='hodProgress'&&d.type==='RESULT_SHEET_UPDATED')navigate('hodProgress');
+      if(state.page==='schoolProgress'&&d.type==='RESULT_SHEET_UPDATED')navigate('schoolProgress');
+      if(state.page==='escalations'&&d.type==='ESCALATION_UPDATED')navigate('escalations');
     });
-    // Quiet safety refresh. It never shows a loading card, never changes page, and preserves scroll position.
-    state.refreshTimer=setInterval(()=>{if(typeof state.backgroundRefresh==='function')state.backgroundRefresh().catch?.(()=>{})},90000);
-    state.notificationTimer=setInterval(refreshNotifications,45000);
+    state.refreshTimer=setInterval(()=>{if(state.page==='classTeacher'){const c=byId('classSelect'),a=byId('assessmentSelect');if(c&&a)loadClassOverview(c.value,a.value).catch(()=>{})}},20000);
+    state.notificationTimer=setInterval(refreshNotifications,30000);
   }
   function disconnectEvents(){if(state.eventSource){state.eventSource.close();state.eventSource=null}if(state.refreshTimer){clearInterval(state.refreshTimer);state.refreshTimer=null}if(state.notificationTimer){clearInterval(state.notificationTimer);state.notificationTimer=null}}
 

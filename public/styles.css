@@ -87,7 +87,7 @@ body{background:linear-gradient(180deg,#f7faff 0,#f2f6fb 260px,#f2f6fb 100%)}
 @media(max-width:850px){.practice-results-card{flex-direction:column;align-items:stretch}.practice-result-actions{display:grid;grid-template-columns:1fr}.practice-result-actions .btn{width:100%}}
 
 /* =========================
-   Reportform ZM V2.8.1 Stable Refresh
+   Reportform ZM V2.9 Teacher Account Registration
    ========================= */
 .simple-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
 .simple-summary .summary-item{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;box-shadow:0 3px 12px #1f35570b}
@@ -125,12 +125,12 @@ details.master-results{background:#fff;border:1px solid var(--line);border-radiu
 .training-login-hint code{font-weight:900;font-size:13px}
 @media(max-width:650px){.simple-login-card{padding:22px 18px}.simple-login-card .brand h1{font-size:21px}.simple-login-card .login-hero{padding:12px}}
 
-/* V2.8.1 stability: background refreshes update in place without blanking the page. */
-#classOverview,#hodProgressBody,#schoolProgressBody,.escalation-list{min-height:1px;}
 
-/* V3.0 production storage status */
-.storage-safety-card{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:16px 0;padding:18px 20px;border-radius:18px;border:1px solid var(--border,#dbe3ee);background:#fff;box-shadow:0 8px 28px rgba(12,38,73,.06)}
-.storage-safety-card.protected{border-color:#b8dfce;background:linear-gradient(135deg,#f2fbf6,#fff)}
-.storage-safety-card.warning{border-color:#efc7a6;background:linear-gradient(135deg,#fff8ef,#fff)}
-.storage-safety-card h3{margin:4px 0 6px}.storage-safety-card p{margin:0 0 6px;max-width:720px}.storage-safety-card small{color:#667085}.storage-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.file-btn{cursor:pointer}
-@media(max-width:720px){.storage-safety-card{align-items:flex-start;flex-direction:column}.storage-actions{width:100%}.storage-actions .btn{flex:1}}
+/* V2.9 teacher self-registration */
+.create-account-btn{margin-top:12px}
+.login-help-text{font-size:12px;color:var(--muted);text-align:center;line-height:1.45;margin-top:9px}
+.account-requests-card{margin-top:16px;border:1px solid #f1d88a;background:linear-gradient(180deg,#fffdf5,#fff)}
+.account-request-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.account-request-row:first-of-type{border-top:0}
+.account-request-row .inline{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:650px){.account-request-row{align-items:flex-start;flex-direction:column}.account-request-row .inline{width:100%}.account-request-row .inline .btn{flex:1}}
