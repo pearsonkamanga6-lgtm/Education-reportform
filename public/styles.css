@@ -127,3 +127,10 @@ details.master-results{background:#fff;border:1px solid var(--line);border-radiu
 
 /* V2.8.1 stability: background refreshes update in place without blanking the page. */
 #classOverview,#hodProgressBody,#schoolProgressBody,.escalation-list{min-height:1px;}
+
+/* V3.0 production storage status */
+.storage-safety-card{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:16px 0;padding:18px 20px;border-radius:18px;border:1px solid var(--border,#dbe3ee);background:#fff;box-shadow:0 8px 28px rgba(12,38,73,.06)}
+.storage-safety-card.protected{border-color:#b8dfce;background:linear-gradient(135deg,#f2fbf6,#fff)}
+.storage-safety-card.warning{border-color:#efc7a6;background:linear-gradient(135deg,#fff8ef,#fff)}
+.storage-safety-card h3{margin:4px 0 6px}.storage-safety-card p{margin:0 0 6px;max-width:720px}.storage-safety-card small{color:#667085}.storage-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.file-btn{cursor:pointer}
+@media(max-width:720px){.storage-safety-card{align-items:flex-start;flex-direction:column}.storage-actions{width:100%}.storage-actions .btn{flex:1}}

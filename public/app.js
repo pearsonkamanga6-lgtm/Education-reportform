@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '2.8.1';
+  const APP_VERSION = '3.0.0';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -147,7 +147,7 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card simple-login-card">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V2.8.1</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V3.0</p></div></div>
           <div class="login-hero"><b>Welcome</b><span>Enter your name or staff ID to continue.</span></div>
           <form id="loginForm" class="simple-login-form">
             <div class="field"><label>Your name or staff ID</label><input id="identifier" list="staffSuggestions" autocomplete="username" placeholder="e.g. Kamanga or kamanga" required><datalist id="staffSuggestions"></datalist></div>
@@ -215,7 +215,7 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V2.8.1</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V3.0</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
@@ -296,7 +296,7 @@
     if(isRole('HOD')) mainActions.push(actionTile('✓','Teaching Approvals','Approve teachers who claim subjects in your department.','hodClaims'),actionTile('◫','Results Status','See submitted and missing department results.','hodProgress'));
     if(isAdminOrHeadFront()) mainActions.push(actionTile('◉','School Results','See school-wide submission progress.','schoolProgress'),actionTile('✓','Approval Requests','Approve incomplete report release and class-teacher claims.','approvals'));
     content.innerHTML = `
-      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V2.8.1</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V3.0</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
       ${isRole('TEACHER')?deadlineBanner(rem.reminders):''}
       <div class="simple-summary">
         ${isRole('TEACHER')?`<div><b>${submitted}/${sheets.length||0}</b><span>result sheets submitted</span></div>`:''}
@@ -652,7 +652,7 @@
   }
 
   async function renderAdmin(content) {
-    const d=await api('/api/admin/setup'); const teachers=d.users.filter(u=>(u.roles||[]).includes('TEACHER'));
+    const [d,storage]=await Promise.all([api('/api/admin/setup'),api('/api/admin/storage-status')]); const teachers=d.users.filter(u=>(u.roles||[]).includes('TEACHER'));
     const classStaffing=d.classes.map(c=>{
       const rows=d.teachingAssignments.filter(a=>a.classId===c.id);
       const groups=new Map();
@@ -666,6 +666,7 @@
     const classTeachersAssigned=classStaffing.filter(x=>!!x.classTeacher).length;
     const teachingStaffWithLoad=teachers.filter(t=>d.teachingAssignments.some(a=>a.teacherUserId===t.id)).length;
     content.innerHTML=`<div class="admin-hero"><div><span class="eyebrow">ADMIN CONTROL CENTRE</span><h2>Configure the school once</h2><p>The administrator creates the structure and officially assigns each class teacher. EduSend recognizes that role immediately.</p></div><button id="backupBtn" class="btn btn-gold">Download data backup</button></div>
+    <div class="storage-safety-card ${storage.productionReady?'protected':'warning'}"><div><span class="eyebrow">DATA SAFETY</span><h3>${storage.productionReady?'PostgreSQL storage protected':'Temporary local storage'}</h3><p>${storage.productionReady?'School data is being saved in PostgreSQL and survives app redeploys/restarts.':'DATABASE_URL is not connected yet. Do not use this mode for permanent school records.'}</p><small>Revision ${storage.revision||0} • Last saved ${storage.lastSavedAt?fmtDate(storage.lastSavedAt):'Not yet'}${storage.entityCount?` • ${storage.entityCount} database records`:''}${storage.snapshotCount?` • ${storage.snapshotCount} recovery snapshots`:''}</small></div><div class="storage-actions"><label class="btn btn-secondary file-btn">Choose backup<input id="restoreBackupFile" type="file" accept="application/json,.json" hidden></label><button id="restoreBackupBtn" class="btn btn-secondary">Restore backup</button></div></div>
     <div class="demo-loader-card"><div><span class="eyebrow">ORIENTATION MODE</span><h3>Lumezi practice school</h3><p>Load 2 classes, 10 fictional pupils, 10 staff and five subjects per class so you can practise the complete workflow quickly.</p></div><button id="loadDemoBtn" class="btn btn-primary">${d.school.demoMode?'Reset practice school':'Load practice school'}</button></div>
     ${d.school.demoMode?`<div class="practice-results-card"><div><span class="eyebrow">FAST TESTING</span><h3>Generate practice results automatically</h3><p>You do not need to type every mark. Create a mixed school scenario, submit every subject instantly, or clear only the practice results and start again. These tools never change staff, classes or pupils.</p></div><div class="practice-result-actions"><button id="practiceMixedBtn" class="btn btn-secondary">Create mixed scenario</button><button id="practiceSubmitAllBtn" class="btn btn-green">Submit all practice results</button><button id="practiceClearBtn" class="btn btn-danger-soft">Clear practice results</button></div></div>`:''}
     <div class="grid grid-4 staffing-health">
@@ -738,6 +739,7 @@
     byId('schoolForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/admin/school',{method:'POST',body:{name:byId('schoolName').value,motto:byId('schoolMotto').value,address:byId('schoolAddress').value,email:byId('schoolEmail').value}});toast('School details saved');await bootstrap()}catch(err){toast(err.message,true)}};
     byId('importCsv').onclick=()=>importCsvPupils();
     byId('backupBtn').onclick=async()=>{try{const x=await api('/api/admin/backup');const blob=new Blob([JSON.stringify(x,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`EduSend_Backup_${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href);toast('Backup downloaded')}catch(e){toast(e.message,true)}};
+    byId('restoreBackupBtn').onclick=async()=>{const f=byId('restoreBackupFile')?.files?.[0];if(!f){toast('Choose an EduSend JSON backup first',true);return}if(!confirm('Restore this backup into the school database? Current data will be replaced by the backup contents.'))return;const phrase=prompt('Type RESTORE BACKUP to continue:','');if(phrase!=='RESTORE BACKUP'){toast('Restore cancelled',true);return}try{const parsed=JSON.parse(await f.text());const r=await api('/api/admin/restore-backup',{method:'POST',body:{confirm:phrase,data:parsed}});actionPopup('Backup restored',`Database revision ${r.storage?.revision||''} saved successfully.`);await bootstrap()}catch(e){actionPopup('Restore failed',e.message,'error')}};
   }
 
   async function importCsvPupils(){const f=byId('csvFile').files?.[0];if(!f){toast('Choose a CSV file first',true);return}const text=await f.text();const lines=text.split(/\r?\n/).filter(Boolean);if(lines.length<2){toast('CSV has no pupil rows',true);return}const headers=lines[0].split(',').map(x=>x.trim());const rows=lines.slice(1).map(line=>{const vals=line.split(',').map(x=>x.trim().replace(/^"|"$/g,''));const o={};headers.forEach((h,i)=>o[h]=vals[i]||'');return o});try{const r=await api('/api/admin/pupils-bulk',{method:'POST',body:{classId:byId('csvClass').value,pupils:rows}});toast(`${r.count} pupils imported`)}catch(e){toast(e.message,true)}}
