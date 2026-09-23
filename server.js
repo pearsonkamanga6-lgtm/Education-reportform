@@ -131,38 +131,49 @@ function makePracticeSchoolData() {
   const kamanga = addUser('usr_kamanga','Mr Kamanga P','kamanga','1234',['TEACHER'],'dept_science','0973296462');
   const banda = addUser('usr_banda_science','Ms Grace Banda','banda','1234',['TEACHER'],'dept_science');
   const mbewe = addUser('usr_mbewe_social','Mr Joseph Mbewe','mbewe','1234',['TEACHER'],'dept_social');
-  const sakala = addUser('usr_sakala_ict','Ms Memory Sakala','sakala','1234',['TEACHER'],'dept_business');
-  // This account is intentionally unassigned so the first-login teaching-profile workflow can be tested.
+  const sakala = addUser('usr_sakala_business','Ms Memory Sakala','sakala','1234',['TEACHER'],'dept_business');
+  // Intentionally unassigned so first-login profile setup remains testable.
   const chanda = addUser('usr_chanda_new','Ms Esther Chanda','chanda','1234',['TEACHER'],'dept_science');
 
   const classes = [
-    { id:'class_1m', name:'1M', level:'Form 1', gradingSystem:'CBC', classTeacherUserId:sakala.id, active:true },
-    { id:'class_12l', name:'12L', level:'Grade 12', gradingSystem:'LEGACY', classTeacherUserId:tembo.id, active:true }
+    { id:'class_10l', name:'10L', level:'Grade 10', gradingSystem:'LEGACY', classTeacherUserId:sakala.id, active:true },
+    { id:'class_11n', name:'11N', level:'Grade 11', gradingSystem:'LEGACY', classTeacherUserId:tembo.id, active:true }
   ];
 
   const subjects = [
     {id:'sub_english',name:'English',departmentId:'dept_languages',active:true},
     {id:'sub_mathematics',name:'Mathematics',departmentId:'dept_science',active:true},
-    {id:'sub_science',name:'Integrated Science',departmentId:'dept_science',active:true},
-    {id:'sub_ict',name:'ICT',departmentId:'dept_business',active:true},
+    {id:'sub_geography',name:'Geography',departmentId:'dept_social',active:true},
+    {id:'sub_science',name:'Science',departmentId:'dept_science',active:true},
+    {id:'sub_commerce',name:'Commerce',departmentId:'dept_business',active:true},
     {id:'sub_civic',name:'Civic Education',departmentId:'dept_social',active:true},
+    {id:'sub_chemistry',name:'Chemistry',departmentId:'dept_science',active:true},
     {id:'sub_physics',name:'Physics',departmentId:'dept_science',active:true},
-    {id:'sub_biology',name:'Biology',departmentId:'dept_science',active:true},
-    {id:'sub_geography',name:'Geography',departmentId:'dept_social',active:true}
+    {id:'sub_biology',name:'Biology',departmentId:'dept_science',active:true}
   ];
   const subjectById = Object.fromEntries(subjects.map(x=>[x.id,x]));
 
+  // The practice subset is deliberately small. Marks are transcribed from the uploaded
+  // Lumezi Boarding Secondary School 2026 schedules, while pupil names are anonymized for safe testing.
   const classSubjects = {
-    class_1m:['sub_english','sub_mathematics','sub_science','sub_ict','sub_civic'],
-    class_12l:['sub_english','sub_mathematics','sub_physics','sub_biology','sub_geography']
+    class_10l:['sub_english','sub_mathematics','sub_geography','sub_science','sub_commerce','sub_civic'],
+    class_11n:['sub_english','sub_mathematics','sub_chemistry','sub_physics','sub_biology','sub_civic']
   };
 
   const pupilRows = {
-    class_1m:[
-      ['Aaron Banda','M','1M-001'],['Brenda Chanda','F','1M-002'],['Chisomo Daka','F','1M-003'],['David Lungu','M','1M-004'],['Esther Mbewe','F','1M-005']
+    class_10l:[
+      ['Aaron Banda','M','10L-001'],
+      ['Brenda Chanda','F','10L-002'],
+      ['Chisomo Daka','F','10L-003'],
+      ['David Lungu','M','10L-004'],
+      ['Esther Mbewe','F','10L-005']
     ],
-    class_12l:[
-      ['Brian Mwale','M','12L-001'],['Grace Phiri','F','12L-002'],['Kelvin Sakala','M','12L-003'],['Mary Tembo','F','12L-004'],['Victor Zulu','M','12L-005']
+    class_11n:[
+      ['Brian Mwale','M','11N-001'],
+      ['Grace Phiri','F','11N-002'],
+      ['Kelvin Sakala','M','11N-003'],
+      ['Mary Tembo','F','11N-004'],
+      ['Victor Zulu','M','11N-005']
     ]
   };
   const pupils=[];
@@ -174,42 +185,73 @@ function makePracticeSchoolData() {
   }
 
   const assignmentsSpec = [
-    ['class_1m','sub_english',tembo], ['class_1m','sub_mathematics',hodScience], ['class_1m','sub_science',banda], ['class_1m','sub_ict',sakala], ['class_1m','sub_civic',mbewe],
-    ['class_12l','sub_english',tembo], ['class_12l','sub_mathematics',phiri], ['class_12l','sub_physics',kamanga], ['class_12l','sub_biology',banda], ['class_12l','sub_geography',mbewe]
+    ['class_10l','sub_english',tembo], ['class_10l','sub_mathematics',hodScience], ['class_10l','sub_geography',mbewe], ['class_10l','sub_science',banda], ['class_10l','sub_commerce',sakala], ['class_10l','sub_civic',mbewe],
+    ['class_11n','sub_english',tembo], ['class_11n','sub_mathematics',phiri], ['class_11n','sub_chemistry',banda], ['class_11n','sub_physics',kamanga], ['class_11n','sub_biology',hodScience], ['class_11n','sub_civic',mbewe]
   ];
   const teachingAssignments = assignmentsSpec.map(([classId,subjectId,teacher],i)=>({ id:`ta_demo_${i+1}`, classId, subjectId, teacherUserId:teacher.id, active:true }));
   for (const u of users) u.profileSetupComplete = teachingAssignments.some(a=>a.teacherUserId===u.id) || classes.some(c=>c.classTeacherUserId===u.id) || !u.roles.includes('TEACHER');
   chanda.profileSetupComplete = false;
 
   const assessment = {
-    id:'assess_practice_2026', name:'Practice Assessment 2026', term:'Practice', year:2026,
-    dueAt:'2026-09-25T16:00:00+02:00', active:true, classIds:classes.map(c=>c.id), passMark:50, minPassSubjects:5
+    id:'assess_practice_2026', name:'Term 2 Mark Schedule Practice 2026', term:'Term 2', year:2026,
+    dueAt:'2026-09-30T16:00:00+02:00', active:true, classIds:classes.map(c=>c.id), passMark:50, minPassSubjects:5
   };
+
+  // Exact practice subset transcribed from the uploaded schedules. null = no mark visible on source.
+  const sourceMarks = {
+    class_10l: {
+      sub_english:[50,68,62,50,70],
+      sub_mathematics:[80,4,82,92,24],
+      sub_geography:[39,42,52,52,32],
+      sub_science:[61,45,70,40,51],
+      sub_commerce:[71,58,72,68,69],
+      sub_civic:[56,50,66,58,60]
+    },
+    class_11n: {
+      sub_english:[43,50,40,65,36],
+      sub_mathematics:[53,80,55,86,88],
+      sub_chemistry:[68,64,45,75,76],
+      sub_physics:[null,61,59,73,57],
+      sub_biology:[63,87,68,90,72],
+      sub_civic:[60,70,40,67,64]
+    }
+  };
+
   const resultSheets=[]; const notifications=[];
-  const submitted = new Set(['class_1m|sub_english','class_12l|sub_english']);
-  const draft = new Set(['class_12l|sub_physics']);
-  const demoMark=(pi,ai)=>45+((pi*9+ai*7)%46);
   teachingAssignments.forEach((a,ai)=>{
-    const key=`${a.classId}|${a.subjectId}`; const status=submitted.has(key)?'SUBMITTED':draft.has(key)?'DRAFT':'NOT_STARTED';
+    const isPhysicsDraft = a.classId==='class_11n' && a.subjectId==='sub_physics';
+    const status = isPhysicsDraft ? 'DRAFT' : 'SUBMITTED';
     const marks={}; const markStates={}; const markNotes={};
+    const values = sourceMarks[a.classId]?.[a.subjectId] || [];
     pupils.filter(p=>p.classId===a.classId).forEach((p,pi)=>{
-      if(status==='SUBMITTED'){marks[p.id]=demoMark(pi,ai);markStates[p.id]='PRESENT';}
-      else if(status==='DRAFT'&&pi<2){marks[p.id]=demoMark(pi,ai);markStates[p.id]='PRESENT';}
-      else markStates[p.id]='PENDING';
+      const v = values[pi];
+      if (v === null || v === undefined) {
+        markStates[p.id]='PENDING';
+        markNotes[p.id]='No mark is shown on the uploaded source mark schedule.';
+      } else {
+        marks[p.id]=v; markStates[p.id]='PRESENT';
+      }
     });
-    resultSheets.push({id:`sheet_${a.id}_${assessment.id}`,assignmentId:a.id,assessmentId:assessment.id,status,marks,markStates,markNotes,deadlineOverride:null,revision:1,updatedAt:status==='NOT_STARTED'?null:'2026-09-18T15:00:00+02:00',submittedAt:status==='SUBMITTED'?'2026-09-18T15:00:00+02:00':null,enteredByUserId:a.teacherUserId,source:'Reportform ZM simple training data'});
+    resultSheets.push({
+      id:`sheet_${a.id}_${assessment.id}`,assignmentId:a.id,assessmentId:assessment.id,status,marks,markStates,markNotes,
+      deadlineOverride:null,revision:1,updatedAt:'2026-09-23T10:00:00+02:00',submittedAt:status==='SUBMITTED'?'2026-09-23T10:00:00+02:00':null,
+      enteredByUserId:a.teacherUserId,source:'Uploaded Lumezi 2026 mark schedule training subset'
+    });
     if(status==='SUBMITTED'){
       const cls=classes.find(c=>c.id===a.classId); const teacher=users.find(u=>u.id===a.teacherUserId); const sub=subjectById[a.subjectId];
-      if(cls?.classTeacherUserId) notifications.push({id:`note_${a.id}`,userId:cls.classTeacherUserId,type:'RESULT_SUBMITTED',title:`${sub.name} results received`,message:`${teacher.name} submitted ${sub.name} results for ${cls.name}.`,meta:{classId:cls.id,assignmentId:a.id,assessmentId:assessment.id},createdAt:'2026-09-18T15:01:00+02:00',readAt:null});
+      if(cls?.classTeacherUserId) notifications.push({id:`note_${a.id}`,userId:cls.classTeacherUserId,type:'RESULT_SUBMITTED',title:`${sub.name} results received`,message:`${teacher.name} submitted ${sub.name} results for ${cls.name}.`,meta:{classId:cls.id,assignmentId:a.id,assessmentId:assessment.id},createdAt:'2026-09-23T10:01:00+02:00',readAt:null});
     }
   });
 
   return {
     version:2,
-    school:{id:'school_1',name:'Lumezi Boarding Secondary School',motto:'EDUCATION WITH INTEGRITY AND VIRTUE',address:'P.O. Box 1, Lumezi',email:'lumeziboarding@edu.zm',demoMode:true,demoNote:'Simple training school — 2 classes, 10 fictional pupils, 10 staff and 5 subjects per class.',repeatPolicy:{passMark:50,minPassSubjects:5}},
+    school:{
+      id:'school_1',name:'Lumezi Boarding Secondary School',motto:'EDUCATION WITH INTEGRITY AND VIRTUE',address:'P.O. Box 1, Lumezi',email:'lumeziboarding@edu.zm',demoMode:true,
+      demoNote:'Privacy-safe training subset based on uploaded 2026 Lumezi mark schedules — marks/pending patterns preserved, pupil names anonymized.',repeatPolicy:{passMark:50,minPassSubjects:5}
+    },
     users, departments, classes, subjects, assessments:[assessment], teachingAssignments, pupils, resultSheets,
     notifications, escalations:[], reportReleaseApprovals:[], reportSendLog:[], teachingClaims:[], resultMessages:[],
-    auditLog:[{id:id('audit'),at:nowIso(),actorUserId:admin.id,action:'PRACTICE_SCHOOL_CREATED',detail:'Simple training school created: 2 classes, 10 pupils, 10 staff, 5 subjects per class'}]
+    auditLog:[{id:id('audit'),at:nowIso(),actorUserId:admin.id,action:'PRACTICE_SCHOOL_CREATED',detail:'Privacy-safe source-schedule training subset created: 10L and 11N, 10 anonymized pupils, 10 staff, six subjects per class'}]
   };
 }
 
@@ -419,11 +461,17 @@ function pupilReportReadiness(pupil, assessmentId) {
   const missing = [];
   let received = 0;
   for (const subjectId of requiredSubjectIds) {
+    const subjectName = db.subjects.find(s=>s.id===subjectId)?.name || subjectId;
     const assignment = db.teachingAssignments.find(a => a.classId === pupil.classId && a.subjectId === subjectId && a.active !== false);
-    if (!assignment) { missing.push({subjectId, subjectName:db.subjects.find(s=>s.id===subjectId)?.name || subjectId, reason:'No teacher assigned'}); continue; }
+    if (!assignment) { missing.push({subjectId, subjectName, reason:'No teacher assigned'}); continue; }
     const sheet = findSheet(assignment.id, assessmentId);
-    if (!sheetIsVisible(sheet)) missing.push(assignmentView(assignment));
-    else received++;
+    if (!sheetIsVisible(sheet)) { missing.push({...assignmentView(assignment), reason:'Subject sheet not submitted'}); continue; }
+    const state = stateForPupil(sheet, pupil.id);
+    if (state === 'PENDING') {
+      missing.push({...assignmentView(assignment), reason:String(sheet.markNotes?.[pupil.id] || 'Result pending')});
+      continue;
+    }
+    received++;
   }
   const release = findRelease(pupil.classId, assessmentId);
   const finalReady = requiredSubjectIds.length > 0 && missing.length === 0;
@@ -535,16 +583,25 @@ function reportReadiness(classId, assessmentId) {
   const classPupils = db.pupils.filter(p=>p.classId===classId && p.active!==false);
   const assignments = db.teachingAssignments.filter(a => a.classId === classId && a.active !== false && classPupils.some(p=>pupilTakesSubject(p,a.subjectId)));
   const missing = [];
+  let submittedSheets = 0;
+  let pendingPupilResults = 0;
   for (const a of assignments) {
     const sheet = findSheet(a.id, assessmentId);
-    if (!sheetIsVisible(sheet)) missing.push(assignmentView(a));
+    if (!sheetIsVisible(sheet)) { missing.push({...assignmentView(a), reason:'Subject sheet not submitted'}); continue; }
+    submittedSheets++;
+    const pending = classPupils.filter(p=>pupilTakesSubject(p,a.subjectId) && stateForPupil(sheet,p.id)==='PENDING');
+    if (pending.length) {
+      pendingPupilResults += pending.length;
+      missing.push({...assignmentView(a), reason:`${pending.length} pupil result${pending.length===1?'':'s'} pending`, pendingPupilCount:pending.length, pendingPupilNames:pending.map(p=>p.name)});
+    }
   }
   const release = findRelease(classId, assessmentId);
   const finalReady = assignments.length > 0 && missing.length === 0;
   const provisionalAllowed = !!release?.provisionalAllowed;
   return {
     totalSubjects: assignments.length,
-    submittedSubjects: assignments.length - missing.length,
+    submittedSubjects: submittedSheets,
+    pendingPupilResults,
     missingSubjects: missing,
     finalReady,
     provisionalAllowed,
@@ -1124,14 +1181,14 @@ async function api(req, res, urlObj) {
   if (req.method === 'POST' && pathname === '/api/admin/load-practice-demo') {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req);
-    if (String(body.confirm || '') !== 'LOAD SIMPLE PRACTICE') return sendError(res, 400, 'Confirmation phrase does not match');
+    if (String(body.confirm || '') !== 'LOAD SOURCE PRACTICE') return sendError(res, 400, 'Confirmation phrase does not match');
     try {
       const backupName = `backup-before-practice-${Date.now()}.json`;
       fs.writeFileSync(path.join(DATA_DIR, backupName), JSON.stringify(db, null, 2));
     } catch (e) { console.warn('Could not create pre-demo backup:', e.message); }
     db = makePracticeSchoolData();
     const newAdmin = db.users.find(u => u.username === 'admin');
-    audit(newAdmin.id, 'PRACTICE_DATA_LOADED', 'Simple practice school loaded by administrator');
+    audit(newAdmin.id, 'PRACTICE_DATA_LOADED', 'Realistic source-schedule practice school loaded by administrator');
     saveData();
     broadcastEvent({ type:'PRACTICE_DATA_LOADED', at:nowIso() });
     return sendJson(res, 200, {
