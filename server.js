@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '2.8.1';
+const APP_VERSION = '3.0.0';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');
@@ -17,6 +17,21 @@ const PORT = Number(process.env.PORT || 3000);
 const HOST = process.env.HOST || '0.0.0.0';
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'DEV_ONLY_CHANGE_ME_edusend_v2';
 const TOKEN_TTL_SECONDS = 60 * 60 * 12;
+const DATABASE_URL = process.env.DATABASE_URL || '';
+const DATABASE_SSL = String(process.env.DATABASE_SSL || '').toLowerCase() === 'true';
+const STORAGE_BACKEND = DATABASE_URL ? 'postgresql' : 'local-file';
+let pgPool = null;
+let saveQueue = Promise.resolve();
+
+function getPgPool() {
+  if (!DATABASE_URL) return null;
+  if (!pgPool) {
+    const { Pool } = require('pg');
+    pgPool = new Pool({ connectionString: DATABASE_URL, ssl: DATABASE_SSL ? { rejectUnauthorized: false } : undefined, max: 10, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
+    pgPool.on('error', err => console.error('PostgreSQL pool error:', err.message));
+  }
+  return pgPool;
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -286,48 +301,229 @@ function migrateData(raw) {
   return db;
 }
 
-function loadData() {
-  if (!fs.existsSync(DATA_FILE)) {
-    const seed = makeSeedData();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(seed, null, 2));
-    return seed;
-  }
+const ENTITY_COLLECTIONS = [
+  'users','departments','classes','subjects','assessments','teachingAssignments','pupils','resultSheets',
+  'notifications','escalations','reportReleaseApprovals','reportSendLog','teachingClaims','resultMessages','auditLog'
+];
+let persistedFingerprints = new Map();
+
+function entityKey(collection, entityId) { return `${collection}:${entityId}`; }
+function stableFingerprint(value, sortIndex = 0) {
+  return crypto.createHash('sha256').update(`${sortIndex}:`).update(JSON.stringify(value)).digest('hex');
+}
+
+async function initPostgres() {
+  const pool = getPgPool();
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS edusend_meta (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS edusend_entities (
+      collection TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      sort_index INTEGER NOT NULL DEFAULT 0,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (collection, entity_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_edusend_entities_collection_order ON edusend_entities(collection, sort_index);
+    CREATE TABLE IF NOT EXISTS edusend_recovery_snapshots (
+      id BIGSERIAL PRIMARY KEY,
+      revision BIGINT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      data JSONB NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_edusend_recovery_revision ON edusend_recovery_snapshots(revision DESC);
+  `);
+}
+
+function loadLocalData() {
+  if (!fs.existsSync(DATA_FILE)) return makeSeedData();
   try {
-    const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-    const migrated = migrateData(raw);
-    fs.writeFileSync(DATA_FILE, JSON.stringify(migrated, null, 2));
-    return migrated;
+    return migrateData(JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')));
   } catch (err) {
     console.error('Primary EduSend data file could not be read:', err.message);
-    try {
-      if (fs.existsSync(DATA_BACKUP_FILE)) {
-        const raw = JSON.parse(fs.readFileSync(DATA_BACKUP_FILE, 'utf8'));
-        const recovered = migrateData(raw);
-        fs.writeFileSync(DATA_FILE, JSON.stringify(recovered, null, 2));
-        console.warn('EduSend recovered data from data.json.bak');
-        return recovered;
-      }
-    } catch (backupErr) {
-      console.error('Backup data file could not be read:', backupErr.message);
+    if (fs.existsSync(DATA_BACKUP_FILE)) {
+      const recovered = migrateData(JSON.parse(fs.readFileSync(DATA_BACKUP_FILE, 'utf8')));
+      console.warn('EduSend recovered data from data.json.bak');
+      return recovered;
     }
     throw err;
   }
 }
 
-let db = loadData();
+function capturePersistedFingerprints(state) {
+  const next = new Map();
+  for (const collection of ENTITY_COLLECTIONS) {
+    const rows = Array.isArray(state[collection]) ? state[collection] : [];
+    rows.forEach((entity, index) => {
+      const entityId = String(entity?.id || `${collection}-${index}`);
+      next.set(entityKey(collection, entityId), stableFingerprint(entity, index));
+    });
+  }
+  persistedFingerprints = next;
+}
 
-function saveData() {
-  db.storageMeta ||= { revision:0, lastSavedAt:null };
-  db.storageMeta.revision = Number(db.storageMeta.revision || 0) + 1;
-  db.storageMeta.lastSavedAt = nowIso();
+async function writeFullPostgresState(state) {
+  const pool = getPgPool();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const root = {
+      version: Number(state.version || 2),
+      school: state.school || {},
+      storageMeta: state.storageMeta || {}
+    };
+    await client.query(
+      `INSERT INTO edusend_meta (key, value, updated_at) VALUES ('root', $1::jsonb, NOW())
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()`,
+      [JSON.stringify(root)]
+    );
+    await client.query('DELETE FROM edusend_entities');
+    for (const collection of ENTITY_COLLECTIONS) {
+      const rows = Array.isArray(state[collection]) ? state[collection] : [];
+      for (let index = 0; index < rows.length; index++) {
+        const entity = rows[index];
+        const entityId = String(entity?.id || `${collection}-${index}`);
+        await client.query(
+          'INSERT INTO edusend_entities (collection, entity_id, sort_index, data, updated_at) VALUES ($1,$2,$3,$4::jsonb,NOW())',
+          [collection, entityId, index, JSON.stringify(entity)]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    capturePersistedFingerprints(state);
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
+  } finally { client.release(); }
+}
+
+async function loadData() {
+  if (!DATABASE_URL) {
+    const local = loadLocalData();
+    local.storageMeta ||= { revision:0, lastSavedAt:null, backend:'local-file' };
+    local.storageMeta.backend = 'local-file';
+    fs.writeFileSync(DATA_FILE, JSON.stringify(local, null, 2));
+    return local;
+  }
+
+  await initPostgres();
+  const pool = getPgPool();
+  const metaResult = await pool.query("SELECT value, updated_at FROM edusend_meta WHERE key='root'");
+  if (metaResult.rows.length) {
+    const root = metaResult.rows[0].value || {};
+    const state = { version:Number(root.version || 2), school:root.school || {} };
+    for (const collection of ENTITY_COLLECTIONS) state[collection] = [];
+    const entities = await pool.query('SELECT collection, entity_id, sort_index, data FROM edusend_entities ORDER BY collection, sort_index, entity_id');
+    for (const row of entities.rows) {
+      if (!ENTITY_COLLECTIONS.includes(row.collection)) continue;
+      state[row.collection].push(row.data);
+    }
+    const loaded = migrateData(state);
+    loaded.storageMeta = root.storageMeta || {};
+    loaded.storageMeta.revision = Number(loaded.storageMeta.revision || 0);
+    loaded.storageMeta.lastSavedAt = loaded.storageMeta.lastSavedAt || (metaResult.rows[0].updated_at ? new Date(metaResult.rows[0].updated_at).toISOString() : null);
+    loaded.storageMeta.backend = 'postgresql';
+    capturePersistedFingerprints(loaded);
+    return loaded;
+  }
+
+  // First database connection: import existing local/repository data if available, otherwise seed.
+  let initial;
+  try { initial = loadLocalData(); } catch { initial = makeSeedData(); }
+  initial = migrateData(initial);
+  initial.storageMeta ||= { revision:0, lastSavedAt:null };
+  initial.storageMeta.backend = 'postgresql';
+  await writeFullPostgresState(initial);
+  return initial;
+}
+
+function saveLocalSnapshot(snapshotText) {
   const tmp = `${DATA_FILE}.tmp`;
   if (fs.existsSync(DATA_FILE)) {
     try { fs.copyFileSync(DATA_FILE, DATA_BACKUP_FILE); } catch (e) { console.warn('EduSend backup copy failed:', e.message); }
   }
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  fs.writeFileSync(tmp, snapshotText);
   fs.renameSync(tmp, DATA_FILE);
-  return { revision:db.storageMeta.revision, lastSavedAt:db.storageMeta.lastSavedAt, dataFile:DATA_FILE };
 }
+
+async function persistPostgresEntities(state, revision, savedAt) {
+  const pool = getPgPool();
+  if (!pool) throw new Error('PostgreSQL is not configured');
+  const client = await pool.connect();
+  const nextFingerprints = new Map();
+  try {
+    await client.query('BEGIN');
+    const root = { version:Number(state.version || 2), school:state.school || {}, storageMeta:state.storageMeta || {} };
+    await client.query(
+      `INSERT INTO edusend_meta (key, value, updated_at) VALUES ('root', $1::jsonb, $2)
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at`,
+      [JSON.stringify(root), savedAt]
+    );
+
+    for (const collection of ENTITY_COLLECTIONS) {
+      const rows = Array.isArray(state[collection]) ? state[collection] : [];
+      const currentIds = [];
+      for (let index = 0; index < rows.length; index++) {
+        const entity = rows[index];
+        const entityId = String(entity?.id || `${collection}-${index}`);
+        currentIds.push(entityId);
+        const key = entityKey(collection, entityId);
+        const fp = stableFingerprint(entity, index);
+        nextFingerprints.set(key, fp);
+        if (persistedFingerprints.get(key) === fp) continue;
+        await client.query(
+          `INSERT INTO edusend_entities (collection, entity_id, sort_index, data, updated_at)
+           VALUES ($1,$2,$3,$4::jsonb,$5)
+           ON CONFLICT (collection, entity_id) DO UPDATE SET sort_index=EXCLUDED.sort_index, data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`,
+          [collection, entityId, index, JSON.stringify(entity), savedAt]
+        );
+      }
+      if (currentIds.length) {
+        await client.query('DELETE FROM edusend_entities WHERE collection=$1 AND NOT (entity_id = ANY($2::text[]))', [collection, currentIds]);
+      } else {
+        await client.query('DELETE FROM edusend_entities WHERE collection=$1', [collection]);
+      }
+    }
+
+    // Extra in-database recovery checkpoint every 100 saves. Provider backups remain the primary recovery layer.
+    if (revision === 1 || revision % 100 === 0) {
+      await client.query('INSERT INTO edusend_recovery_snapshots (revision, created_at, data) VALUES ($1,$2,$3::jsonb)', [revision, savedAt, JSON.stringify(state)]);
+      await client.query('DELETE FROM edusend_recovery_snapshots WHERE id NOT IN (SELECT id FROM edusend_recovery_snapshots ORDER BY revision DESC LIMIT 12)');
+    }
+    await client.query('COMMIT');
+    persistedFingerprints = nextFingerprints;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch {}
+    throw err;
+  } finally { client.release(); }
+}
+
+async function saveData() {
+  db.storageMeta ||= { revision:0, lastSavedAt:null };
+  db.storageMeta.revision = Number(db.storageMeta.revision || 0) + 1;
+  db.storageMeta.lastSavedAt = nowIso();
+  db.storageMeta.backend = STORAGE_BACKEND;
+  const revision = db.storageMeta.revision;
+  const savedAt = db.storageMeta.lastSavedAt;
+  // Capture the exact state for this save before another request can mutate the live object.
+  const snapshot = JSON.parse(JSON.stringify(db));
+  const snapshotText = JSON.stringify(snapshot);
+
+  const task = async () => {
+    if (DATABASE_URL) await persistPostgresEntities(snapshot, revision, savedAt);
+    else saveLocalSnapshot(snapshotText);
+    return { revision, lastSavedAt:savedAt, backend:STORAGE_BACKEND };
+  };
+  saveQueue = saveQueue.then(task, task);
+  return saveQueue;
+}
+
+let db = null;
 
 function audit(actorUserId, action, detail = '') {
   db.auditLog.unshift({ id: id('audit'), at: nowIso(), actorUserId, action, detail });
@@ -658,7 +854,7 @@ function setPracticeSheetData(assignment, assessment, assignmentIndex, mode) {
 async function api(req, res, urlObj) {
   const pathname = urlObj.pathname;
 
-  if (req.method === 'GET' && pathname === '/api/version') return sendJson(res, 200, { version: APP_VERSION, storageRevision: db.storageMeta?.revision || 0, lastSavedAt: db.storageMeta?.lastSavedAt || null });
+  if (req.method === 'GET' && pathname === '/api/version') return sendJson(res, 200, { version: APP_VERSION, storageRevision: db.storageMeta?.revision || 0, lastSavedAt: db.storageMeta?.lastSavedAt || null, storageBackend: STORAGE_BACKEND, databaseConnected: !!DATABASE_URL });
 
   // Practice-only name suggestions for the simple training login. No password is exposed by this endpoint.
   if (req.method === 'GET' && pathname === '/api/demo-accounts') {
@@ -676,7 +872,7 @@ async function api(req, res, urlObj) {
     if (matches.length > 1) return sendError(res, 400, 'More than one staff member matches that name. Enter your staff ID instead.');
     const user = matches[0];
     if (!user || !verifyPassword(password, user.passwordHash)) return sendError(res, 401, 'Name/staff ID or PIN is incorrect');
-    audit(user.id, 'LOGIN', identifier); saveData();
+    audit(user.id, 'LOGIN', identifier); await saveData();
     return sendJson(res, 200, { token: issueToken(user.id), user: safeUser(user), school: db.school });
   }
 
@@ -710,7 +906,7 @@ async function api(req, res, urlObj) {
 
   if (req.method === 'POST' && pathname === '/api/profile/phone') {
     const body=await readJson(req); user.phone=String(body.phone||'').trim().slice(0,40); user.profileSetupComplete=true;
-    audit(user.id,'STAFF_PHONE_UPDATED',user.phone?'Phone saved':'Phone cleared'); saveData();
+    audit(user.id,'STAFF_PHONE_UPDATED',user.phone?'Phone saved':'Phone cleared'); await saveData();
     return sendJson(res,200,{user:safeUser(user)});
   }
 
@@ -736,7 +932,7 @@ async function api(req, res, urlObj) {
         createNotification(db.users.filter(u=>hasRole(u,'ADMIN')||hasRole(u,'HEAD')).map(u=>u.id),'CLASS_TEACHER_CLAIM',`Class teacher claim: ${cls.name}`,`${user.name} says they are the class teacher for ${cls.name}.`,{claimId:claim.id});
       }
     }
-    audit(user.id,'TEACHING_PROFILE_SUBMITTED',`${requested.length} claim(s)`); saveData();
+    audit(user.id,'TEACHING_PROFILE_SUBMITTED',`${requested.length} claim(s)`); await saveData();
     return sendJson(res,201,{claims:requested,user:safeUser(user)});
   }
 
@@ -765,7 +961,7 @@ async function api(req, res, urlObj) {
     }
     const teacher=db.users.find(u=>u.id===claim.userId); const cls=db.classes.find(c=>c.id===claim.classId);
     createNotification(claim.userId,'TEACHING_CLAIM_DECISION',approve?'Teaching claim approved':'Teaching claim declined',`${subject?.name||'Subject'} • ${cls?.name||'Class'}${claim.note?` — ${claim.note}`:''}`,{claimId:claim.id});
-    audit(user.id,approve?'TEACHING_CLAIM_APPROVED':'TEACHING_CLAIM_DECLINED',claim.id); saveData();
+    audit(user.id,approve?'TEACHING_CLAIM_APPROVED':'TEACHING_CLAIM_DECLINED',claim.id); await saveData();
     return sendJson(res,200,{claim,teacher:safeUser(teacher)});
   }
 
@@ -782,7 +978,7 @@ async function api(req, res, urlObj) {
     claim.status=approve?'APPROVED':'DECLINED'; claim.decidedAt=nowIso(); claim.decidedByUserId=user.id; claim.note=String(body.note||'').trim();
     if(approve && cls){ const old=cls.classTeacherUserId; cls.classTeacherUserId=claim.userId; if(old&&old!==claim.userId) createNotification(old,'CLASS_TEACHER_CHANGED','Class teacher assignment changed',`You are no longer the class teacher for ${cls.name}.`,{classId:cls.id}); }
     createNotification(claim.userId,'CLASS_TEACHER_CLAIM_DECISION',approve?'Class teacher claim approved':'Class teacher claim declined',`${cls?.name||'Class'}${claim.note?` — ${claim.note}`:''}`,{claimId:claim.id});
-    audit(user.id,approve?'CLASS_TEACHER_CLAIM_APPROVED':'CLASS_TEACHER_CLAIM_DECLINED',claim.id); saveData(); broadcastEvent({type:'CLASS_TEACHER_UPDATED',classId:claim.classId,teacherUserId:approve?claim.userId:null},[claim.userId]);
+    audit(user.id,approve?'CLASS_TEACHER_CLAIM_APPROVED':'CLASS_TEACHER_CLAIM_DECLINED',claim.id); await saveData(); broadcastEvent({type:'CLASS_TEACHER_UPDATED',classId:claim.classId,teacherUserId:approve?claim.userId:null},[claim.userId]);
     return sendJson(res,200,{claim});
   }
 
@@ -800,7 +996,7 @@ async function api(req, res, urlObj) {
     const msg={id:id('msg'),assignmentId:assignment.id,assessmentId:String(body.assessmentId||''),pupilId,fromUserId:user.id,text,createdAt:nowIso(),resolved:false}; db.resultMessages.push(msg);
     const cls=db.classes.find(c=>c.id===assignment.classId); const recipientIds=[assignment.teacherUserId,cls?.classTeacherUserId].filter(uid=>uid&&uid!==user.id);
     createNotification(recipientIds,'RESULT_MESSAGE',`Result question: ${assignmentView(assignment).className} ${assignmentView(assignment).subjectName}`,`${user.name}: ${text}`,{assignmentId:assignment.id,assessmentId:msg.assessmentId,pupilId});
-    audit(user.id,'RESULT_MESSAGE_SENT',assignment.id); saveData(); return sendJson(res,201,{message:{...msg,fromName:user.name}});
+    audit(user.id,'RESULT_MESSAGE_SENT',assignment.id); await saveData(); return sendJson(res,201,{message:{...msg,fromName:user.name}});
   }
 
   if (req.method === 'POST' && pathname === '/api/report-release/request') {
@@ -809,7 +1005,7 @@ async function api(req, res, urlObj) {
     const readiness=reportReadiness(cls.id,assessment.id); if(readiness.finalReady) return sendError(res,409,'All subjects are already complete; approval is not required');
     let release=findRelease(cls.id,assessment.id); if(!release){release={id:id('release'),classId:cls.id,assessmentId:assessment.id};db.reportReleaseApprovals.push(release);} release.status='REQUESTED'; release.provisionalAllowed=false; release.requestedAt=nowIso(); release.requestedByUserId=user.id; release.requestReason=String(body.reason||'').trim(); release.missingSnapshot=readiness.missingSubjects.map(x=>x.subjectName);
     createNotification(db.users.filter(u=>hasRole(u,'ADMIN')||hasRole(u,'HEAD')).map(u=>u.id),'REPORT_RELEASE_REQUEST',`Incomplete report approval: ${cls.name}`,`${user.name} requests permission to send ${assessment.name} reports with ${readiness.submittedSubjects}/${readiness.totalSubjects} subjects received.`,{releaseId:release.id,classId:cls.id,assessmentId:assessment.id});
-    audit(user.id,'REPORT_RELEASE_REQUESTED',`${cls.name}/${assessment.name}`); saveData(); return sendJson(res,201,{release});
+    audit(user.id,'REPORT_RELEASE_REQUESTED',`${cls.name}/${assessment.name}`); await saveData(); return sendJson(res,201,{release});
   }
 
   if (req.method === 'GET' && pathname === '/api/report-release/requests') {
@@ -821,7 +1017,7 @@ async function api(req, res, urlObj) {
   if (req.method === 'POST' && pathname === '/api/report-release/decision') {
     if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const body=await readJson(req); const release=db.reportReleaseApprovals.find(r=>r.id===body.releaseId); if(!release) return sendError(res,404,'Release request not found');
     const approve=!!body.approve; release.status=approve?'APPROVED':'DECLINED'; release.provisionalAllowed=approve; release.approvedAt=nowIso(); release.approvedByUserId=user.id; release.reason=String(body.reason||'').trim(); const cls=db.classes.find(c=>c.id===release.classId); const assessment=db.assessments.find(a=>a.id===release.assessmentId);
-    createNotification(cls?.classTeacherUserId,'REPORT_RELEASE_DECISION',approve?'Incomplete reports approved':'Incomplete reports not approved',`${assessment?.name||'Assessment'} • ${cls?.name||'Class'}${release.reason?` — ${release.reason}`:''}`,{releaseId:release.id}); audit(user.id,approve?'REPORT_RELEASE_APPROVED':'REPORT_RELEASE_DECLINED',release.id); saveData(); return sendJson(res,200,{release});
+    createNotification(cls?.classTeacherUserId,'REPORT_RELEASE_DECISION',approve?'Incomplete reports approved':'Incomplete reports not approved',`${assessment?.name||'Assessment'} • ${cls?.name||'Class'}${release.reason?` — ${release.reason}`:''}`,{releaseId:release.id}); audit(user.id,approve?'REPORT_RELEASE_APPROVED':'REPORT_RELEASE_DECLINED',release.id); await saveData(); return sendJson(res,200,{release});
   }
 
   if (req.method === 'GET' && pathname === '/api/admin/repeat-policy') {
@@ -830,7 +1026,7 @@ async function api(req, res, urlObj) {
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/repeat-policy') {
-    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const body=await readJson(req); const assessment=db.assessments.find(a=>a.id===body.assessmentId&&a.active!==false); if(!assessment) return sendError(res,404,'Assessment not found'); const passMark=Number(body.passMark), minPassSubjects=Number(body.minPassSubjects); if(!Number.isFinite(passMark)||passMark<0||passMark>100||!Number.isInteger(minPassSubjects)||minPassSubjects<1||minPassSubjects>20) return sendError(res,400,'Enter a valid pass mark and minimum number of subjects'); assessment.passMark=passMark; assessment.minPassSubjects=minPassSubjects; db.school.repeatPolicy={passMark,minPassSubjects}; audit(user.id,'REPEAT_POLICY_UPDATED',`${assessment.name}: ${passMark}% in ${minPassSubjects} subjects`); saveData(); return sendJson(res,200,{assessment,policy:repeatPolicyForAssessment(assessment)});
+    if(!isAdminOrHead(user)) return sendError(res,403,'Administration access required'); const body=await readJson(req); const assessment=db.assessments.find(a=>a.id===body.assessmentId&&a.active!==false); if(!assessment) return sendError(res,404,'Assessment not found'); const passMark=Number(body.passMark), minPassSubjects=Number(body.minPassSubjects); if(!Number.isFinite(passMark)||passMark<0||passMark>100||!Number.isInteger(minPassSubjects)||minPassSubjects<1||minPassSubjects>20) return sendError(res,400,'Enter a valid pass mark and minimum number of subjects'); assessment.passMark=passMark; assessment.minPassSubjects=minPassSubjects; db.school.repeatPolicy={passMark,minPassSubjects}; audit(user.id,'REPEAT_POLICY_UPDATED',`${assessment.name}: ${passMark}% in ${minPassSubjects} subjects`); await saveData(); return sendJson(res,200,{assessment,policy:repeatPolicyForAssessment(assessment)});
   }
 
   if (req.method === 'GET' && pathname === '/api/assessments') {
@@ -854,7 +1050,7 @@ async function api(req, res, urlObj) {
     const body = await readJson(req);
     const ids = Array.isArray(body.ids) ? new Set(body.ids.map(String)) : null;
     db.notifications.forEach(n => { if (n.userId === user.id && !n.readAt && (!ids || ids.has(n.id))) n.readAt = nowIso(); });
-    saveData(); return sendJson(res, 200, { ok: true });
+    await saveData(); return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === 'GET' && pathname === '/api/reminders') {
@@ -956,7 +1152,7 @@ async function api(req, res, urlObj) {
       audit(user.id, 'RESULTS_DRAFT_AUTOSAVED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
     }
     sheet.revision = Number(sheet.revision || 0) + 1;
-    const storage = saveData();
+    const storage = await saveData();
     broadcastEvent({ type: 'RESULT_SHEET_UPDATED', classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id, status: sheet.status, revision:sheet.revision, at: sheet.updatedAt }, escalationAudienceForAssignment(assignment));
     const cls = db.classes.find(c => c.id === assignment.classId);
     const subject = db.subjects.find(s => s.id === assignment.subjectId);
@@ -1026,7 +1222,7 @@ async function api(req, res, urlObj) {
     const note = String(body.note || '').trim();
     audit(user.id, 'CORRECTION_REQUESTED', `${assignment.id}/${body.assessmentId}: ${note}`);
     createNotification(assignment.teacherUserId, 'CORRECTION_REQUESTED', `Correction requested: ${assignmentView(assignment).subjectName}`, `${user.name} requested a correction for ${assignmentView(assignment).className} ${assignmentView(assignment).subjectName}.${note ? ` Note: ${note}` : ''}`, { assignmentId: assignment.id, assessmentId: body.assessmentId });
-    saveData(); broadcastEvent({ type: 'RESULT_SHEET_UPDATED', classId: assignment.classId, assignmentId: assignment.id, assessmentId: body.assessmentId, status: sheet.status }, [assignment.teacherUserId, user.id]);
+    await saveData(); broadcastEvent({ type: 'RESULT_SHEET_UPDATED', classId: assignment.classId, assignmentId: assignment.id, assessmentId: body.assessmentId, status: sheet.status }, [assignment.teacherUserId, user.id]);
     return sendJson(res, 200, { ok: true, status: sheet.status });
   }
 
@@ -1041,7 +1237,7 @@ async function api(req, res, urlObj) {
     const log = { id: id('send'), at: nowIso(), classId: cls.id, assessmentId: body.assessmentId, pupilId: pupil.id, sentByUserId: user.id, channel: String(body.channel || 'SHARE'), stage, provisional: readiness.provisional, parentNumber: String(body.parentNumber || pupil.parentPrimary || '') };
     db.reportSendLog.unshift(log); db.reportSendLog = db.reportSendLog.slice(0, 5000);
     audit(user.id, 'REPORT_SENT', `${cls.name}/${pupil.name}/${body.assessmentId}${readiness.provisional ? ' PROVISIONAL' : ''}`);
-    saveData(); return sendJson(res, 201, { log });
+    await saveData(); return sendJson(res, 201, { log });
   }
 
   if (req.method === 'GET' && pathname === '/api/class-teacher/report-history') {
@@ -1068,7 +1264,7 @@ async function api(req, res, urlObj) {
     audit(user.id, 'RESULT_ESCALATED', `${assignment.id}/${assessment.id}`);
     const av = assignmentView(assignment); const recipients = escalationAudienceForAssignment(assignment).filter(uid => uid !== user.id);
     createNotification(recipients, 'ESCALATION', `Missing result escalated: ${av.subjectName}`, `${user.name} escalated ${av.className} ${av.subjectName} for ${assessment.name}.`, { escalationId: esc.id, assignmentId: assignment.id, assessmentId: assessment.id });
-    saveData(); broadcastEvent({ type: 'ESCALATION_UPDATED', escalationId: esc.id, status: esc.status }, escalationAudienceForAssignment(assignment));
+    await saveData(); broadcastEvent({ type: 'ESCALATION_UPDATED', escalationId: esc.id, status: esc.status }, escalationAudienceForAssignment(assignment));
     return sendJson(res, 201, { escalation: esc });
   }
 
@@ -1098,7 +1294,7 @@ async function api(req, res, urlObj) {
     if (av.departmentId !== dept.id) return sendError(res, 403, 'This escalation is outside your department');
     esc.status = 'HOD_FOLLOWUP'; esc.history ||= []; esc.history.unshift({ at: nowIso(), byUserId: user.id, action: 'HOD_FOLLOWUP', note: String(body.note || '').trim() });
     createNotification(assignment.teacherUserId, 'HOD_FOLLOWUP', `HOD follow-up: ${av.className} ${av.subjectName}`, `${user.name} is following up on this outstanding result.${body.note ? ` ${body.note}` : ''}`, { escalationId: esc.id });
-    audit(user.id, 'ESCALATION_HOD_FOLLOWUP', esc.id); saveData();
+    audit(user.id, 'ESCALATION_HOD_FOLLOWUP', esc.id); await saveData();
     return sendJson(res, 200, { escalation: esc });
   }
 
@@ -1128,7 +1324,7 @@ async function api(req, res, urlObj) {
     } else if (action === 'RESOLVE') {
       esc.status = 'RESOLVED'; esc.resolvedAt = nowIso(); esc.history.unshift({ at: nowIso(), byUserId: user.id, action, note: String(body.note || '') });
     } else return sendError(res, 400, 'Unsupported escalation action');
-    audit(user.id, `ESCALATION_${action}`, esc.id); saveData(); broadcastEvent({ type: 'ESCALATION_UPDATED', escalationId: esc.id, status: esc.status }, escalationAudienceForAssignment(assignment));
+    audit(user.id, `ESCALATION_${action}`, esc.id); await saveData(); broadcastEvent({ type: 'ESCALATION_UPDATED', escalationId: esc.id, status: esc.status }, escalationAudienceForAssignment(assignment));
     return sendJson(res, 200, { escalation: esc });
   }
 
@@ -1151,7 +1347,7 @@ async function api(req, res, urlObj) {
     else { assignment = { id: id('ta'), classId: cls.id, subjectId: subject.id, teacherUserId: teacher.id, active: true }; db.teachingAssignments.push(assignment); }
     audit(user.id, 'TEACHING_ASSIGNMENT_SET', `${cls.name} / ${subject.name} -> ${teacher.name}`);
     createNotification(teacher.id, 'ASSIGNMENT', 'New teaching result assignment', `You are assigned ${subject.name} results for ${cls.name}.`, { assignmentId: assignment.id });
-    saveData(); broadcastEvent({ type: 'ASSIGNMENT_UPDATED', classId: cls.id, subjectId: subject.id, teacherUserId: teacher.id }, [teacher.id, user.id]);
+    await saveData(); broadcastEvent({ type: 'ASSIGNMENT_UPDATED', classId: cls.id, subjectId: subject.id, teacherUserId: teacher.id }, [teacher.id, user.id]);
     return sendJson(res, 200, { assignment: assignmentView(assignment) });
   }
 
@@ -1189,7 +1385,7 @@ async function api(req, res, urlObj) {
     db = makePracticeSchoolData();
     const newAdmin = db.users.find(u => u.username === 'admin');
     audit(newAdmin.id, 'PRACTICE_DATA_LOADED', 'Realistic source-schedule practice school loaded by administrator');
-    saveData();
+    await saveData();
     broadcastEvent({ type:'PRACTICE_DATA_LOADED', at:nowIso() });
     return sendJson(res, 200, {
       ok:true, token:issueToken(newAdmin.id),
@@ -1213,7 +1409,7 @@ async function api(req, res, urlObj) {
       db.reportSendLog = db.reportSendLog.filter(r => r.assessmentId !== assessment.id);
       db.notifications = db.notifications.filter(n => n.meta?.assessmentId !== assessment.id && n.type !== 'RESULTS_SUBMITTED');
       audit(user.id, 'PRACTICE_RESULTS_CLEARED', assessment.name);
-      const storage = saveData();
+      const storage = await saveData();
       broadcastEvent({ type:'PRACTICE_RESULTS_UPDATED', action:'CLEAR', assessmentId:assessment.id, at:nowIso() });
       return sendJson(res, 200, { ok:true, action, submitted:0, draft:0, notStarted:assignments.length, storageRevision:storage.revision });
     }
@@ -1235,7 +1431,7 @@ async function api(req, res, urlObj) {
       createNotification(cls.classTeacherUserId, 'PRACTICE_RESULTS_READY', `Practice results updated: ${cls.name}`, `${done}/${classAssignments.length} subject result sheets are now submitted for ${assessment.name}. Submitted marks are available in Class Progress as read-only results.`, { classId:cls.id, assessmentId:assessment.id });
     });
     audit(user.id, action === 'SUBMIT_ALL' ? 'PRACTICE_RESULTS_SUBMITTED_ALL' : 'PRACTICE_RESULTS_MIXED_SCENARIO', `${assessment.name}: ${submitted} submitted, ${draft} draft, ${notStarted} not started`);
-    const storage = saveData();
+    const storage = await saveData();
     broadcastEvent({ type:'PRACTICE_RESULTS_UPDATED', action, assessmentId:assessment.id, submitted, draft, notStarted, at:nowIso() });
     return sendJson(res, 200, { ok:true, action, submitted, draft, notStarted, total:assignments.length, storageRevision:storage.revision });
   }
@@ -1249,14 +1445,14 @@ async function api(req, res, urlObj) {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req);
     for (const k of ['name', 'motto', 'address', 'email']) if (body[k] !== undefined) db.school[k] = String(body[k] || '').trim();
-    audit(user.id, 'SCHOOL_DETAILS_UPDATED', db.school.name); saveData(); return sendJson(res, 200, { school: db.school });
+    audit(user.id, 'SCHOOL_DETAILS_UPDATED', db.school.name); await saveData(); return sendJson(res, 200, { school: db.school });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/department') {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req); const name = String(body.name || '').trim(); if (!name) return sendError(res, 400, 'Department name is required');
     if (db.departments.some(d => d.name.toLowerCase() === name.toLowerCase())) return sendError(res, 409, 'Department already exists');
-    const dept = { id: id('dept'), name, hodUserId: null }; db.departments.push(dept); audit(user.id, 'DEPARTMENT_CREATED', name); saveData(); return sendJson(res, 201, { department: dept });
+    const dept = { id: id('dept'), name, hodUserId: null }; db.departments.push(dept); audit(user.id, 'DEPARTMENT_CREATED', name); await saveData(); return sendJson(res, 201, { department: dept });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/subject') {
@@ -1264,7 +1460,7 @@ async function api(req, res, urlObj) {
     const body = await readJson(req); const name = String(body.name || '').trim(); const dept = db.departments.find(d => d.id === body.departmentId);
     if (!name || !dept) return sendError(res, 400, 'Subject name and department are required');
     if (db.subjects.some(s => s.name.toLowerCase() === name.toLowerCase() && s.active !== false)) return sendError(res, 409, 'Subject already exists');
-    const subject = { id: id('sub'), name, departmentId: dept.id, active: true }; db.subjects.push(subject); audit(user.id, 'SUBJECT_CREATED', `${name}/${dept.name}`); saveData(); return sendJson(res, 201, { subject });
+    const subject = { id: id('sub'), name, departmentId: dept.id, active: true }; db.subjects.push(subject); audit(user.id, 'SUBJECT_CREATED', `${name}/${dept.name}`); await saveData(); return sendJson(res, 201, { subject });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/user') {
@@ -1276,7 +1472,7 @@ async function api(req, res, urlObj) {
     const newUser = { id: id('usr'), name, username, passwordHash: hashPassword(password), roles: roles.length ? roles : ['TEACHER'], departmentId: body.departmentId || null, departmentIds: body.departmentId ? [body.departmentId] : [], phone: String(body.phone || '').trim(), active: true };
     db.users.push(newUser);
     if (newUser.roles.includes('HOD') && newUser.departmentId) { const dept = db.departments.find(d => d.id === newUser.departmentId); if (dept) dept.hodUserId = newUser.id; }
-    audit(user.id, 'USER_CREATED', `${name} (${username})`); saveData(); return sendJson(res, 201, { user: safeUser(newUser) });
+    audit(user.id, 'USER_CREATED', `${name} (${username})`); await saveData(); return sendJson(res, 201, { user: safeUser(newUser) });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/class-teacher') {
@@ -1299,7 +1495,7 @@ async function api(req, res, urlObj) {
     if (oldTeacherId && oldTeacherId !== cls.classTeacherUserId) {
       createNotification(oldTeacherId, 'CLASS_TEACHER_CHANGED', 'Class teacher assignment changed', `You are no longer assigned as class teacher for ${cls.name}.`, { classId: cls.id });
     }
-    const storage=saveData();
+    const storage=await saveData();
     const audience=[user.id,oldTeacherId,cls.classTeacherUserId].filter(Boolean);
     broadcastEvent({ type:'CLASS_TEACHER_UPDATED', classId:cls.id, teacherUserId:cls.classTeacherUserId, oldTeacherUserId:oldTeacherId }, audience);
     return sendJson(res, 200, { class:cls, classTeacherName:teacher?.name || '', storageRevision:storage.revision });
@@ -1310,7 +1506,7 @@ async function api(req, res, urlObj) {
     const body = await readJson(req); const name = String(body.name || '').trim(); if (!name) return sendError(res, 400, 'Class name is required');
     if (db.classes.some(c => c.name.toLowerCase() === name.toLowerCase() && c.active !== false)) return sendError(res, 409, 'Class already exists');
     const cls = { id: id('class'), name, level: String(body.level || '').trim(), gradingSystem: body.gradingSystem === 'CBC' ? 'CBC' : 'LEGACY', classTeacherUserId: null, active: true };
-    db.classes.push(cls); audit(user.id, 'CLASS_CREATED', name); saveData(); return sendJson(res, 201, { class: cls });
+    db.classes.push(cls); audit(user.id, 'CLASS_CREATED', name); await saveData(); return sendJson(res, 201, { class: cls });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/assessment') {
@@ -1320,7 +1516,7 @@ async function api(req, res, urlObj) {
     const classIds = Array.isArray(body.classIds) ? body.classIds.filter(cid=>db.classes.some(c=>c.id===cid&&c.active!==false)) : [];
     const basePolicy = db.school.repeatPolicy || {passMark:50,minPassSubjects:5};
     const assessment = { id: id('assess'), name, term: String(body.term || '').trim(), year: Number(body.year || new Date().getFullYear()), dueAt, active: true, classIds, passMark:Number(body.passMark ?? basePolicy.passMark ?? 50), minPassSubjects:Number(body.minPassSubjects ?? basePolicy.minPassSubjects ?? 5) };
-    db.assessments.push(assessment); audit(user.id, 'ASSESSMENT_CREATED', `${name} due ${dueAt}`); saveData(); broadcastEvent({ type: 'ASSESSMENT_CREATED', assessmentId: assessment.id }); return sendJson(res, 201, { assessment });
+    db.assessments.push(assessment); audit(user.id, 'ASSESSMENT_CREATED', `${name} due ${dueAt}`); await saveData(); broadcastEvent({ type: 'ASSESSMENT_CREATED', assessmentId: assessment.id }); return sendJson(res, 201, { assessment });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/pupil') {
@@ -1329,7 +1525,7 @@ async function api(req, res, urlObj) {
     if (!cls || !name) return sendError(res, 400, 'Class and pupil name are required');
     const subjectIds = Array.isArray(body.subjectIds) ? body.subjectIds.filter(sid=>db.subjects.some(s=>s.id===sid&&s.active!==false)) : [];
     const pupil = { id: id('pupil'), classId: cls.id, name, sex: String(body.sex || '').trim().toUpperCase().slice(0, 1), examNo: String(body.examNo || '').trim(), parentPrimary: String(body.parentPrimary || '').trim(), parentAltPhones: Array.isArray(body.parentAltPhones) ? body.parentAltPhones.map(String) : [], isRepeater: !!body.isRepeater, subjectIds, active: true };
-    db.pupils.push(pupil); audit(user.id, 'PUPIL_CREATED', `${name} / ${cls.name}`); saveData(); return sendJson(res, 201, { pupil });
+    db.pupils.push(pupil); audit(user.id, 'PUPIL_CREATED', `${name} / ${cls.name}`); await saveData(); return sendJson(res, 201, { pupil });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/pupils-bulk') {
@@ -1342,19 +1538,69 @@ async function api(req, res, urlObj) {
       const pupil = { id: id('pupil'), classId: cls.id, name, sex: String(row.sex || '').trim().toUpperCase().slice(0, 1), examNo: String(row.examNo || '').trim(), parentPrimary: String(row.parentPrimary || '').trim(), parentAltPhones: [], isRepeater: /^(1|true|yes|y)$/i.test(String(row.isRepeater || '')), active: true };
       db.pupils.push(pupil); added.push(pupil);
     }
-    audit(user.id, 'PUPILS_BULK_IMPORTED', `${added.length} / ${cls.name}`); saveData(); return sendJson(res, 201, { count: added.length, pupils: added });
+    audit(user.id, 'PUPILS_BULK_IMPORTED', `${added.length} / ${cls.name}`); await saveData(); return sendJson(res, 201, { count: added.length, pupils: added });
   }
 
   if (req.method === 'POST' && pathname === '/api/admin/lock-sheet') {
     if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
     const body = await readJson(req); const sheet = findSheet(body.assignmentId, body.assessmentId); if (!sheet) return sendError(res, 404, 'Result sheet not found');
-    sheet.status = body.lock === false ? 'SUBMITTED' : 'LOCKED'; sheet.updatedAt = nowIso(); audit(user.id, sheet.status === 'LOCKED' ? 'RESULT_SHEET_LOCKED' : 'RESULT_SHEET_UNLOCKED', `${body.assignmentId}/${body.assessmentId}`); saveData(); broadcastEvent({ type: 'RESULT_SHEET_UPDATED', assignmentId: body.assignmentId, assessmentId: body.assessmentId, status: sheet.status }); return sendJson(res, 200, { status: sheet.status });
+    sheet.status = body.lock === false ? 'SUBMITTED' : 'LOCKED'; sheet.updatedAt = nowIso(); audit(user.id, sheet.status === 'LOCKED' ? 'RESULT_SHEET_LOCKED' : 'RESULT_SHEET_UNLOCKED', `${body.assignmentId}/${body.assessmentId}`); await saveData(); broadcastEvent({ type: 'RESULT_SHEET_UPDATED', assignmentId: body.assignmentId, assessmentId: body.assessmentId, status: sheet.status }); return sendJson(res, 200, { status: sheet.status });
   }
 
   if (req.method === 'GET' && pathname === '/api/admin/audit') {
     if (!isAdminOrHead(user)) return sendError(res, 403, 'Administration access required');
     const rows = db.auditLog.slice(0, 500).map(r => ({ ...r, actorName: db.users.find(u => u.id === r.actorUserId)?.name || 'System' }));
     return sendJson(res, 200, { rows });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/admin/storage-status') {
+    if (!isAdminOrHead(user)) return sendError(res, 403, 'Administration access required');
+    let databaseHealthy = false;
+    let snapshotCount = 0;
+    let entityCount = 0;
+    if (DATABASE_URL) {
+      try {
+        const pool = getPgPool();
+        await pool.query('SELECT 1');
+        databaseHealthy = true;
+        const c = await pool.query('SELECT COUNT(*)::int AS count FROM edusend_recovery_snapshots');
+        snapshotCount = Number(c.rows[0]?.count || 0);
+        const e = await pool.query('SELECT COUNT(*)::int AS count FROM edusend_entities');
+        entityCount = Number(e.rows[0]?.count || 0);
+      } catch (e) { databaseHealthy = false; }
+    }
+    return sendJson(res, 200, {
+      backend: STORAGE_BACKEND,
+      databaseConfigured: !!DATABASE_URL,
+      databaseHealthy,
+      revision: db.storageMeta?.revision || 0,
+      lastSavedAt: db.storageMeta?.lastSavedAt || null,
+      snapshotCount,
+      entityCount,
+      productionReady: !!DATABASE_URL && databaseHealthy
+    });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/admin/restore-backup') {
+    if (!hasRole(user, 'ADMIN')) return sendError(res, 403, 'Administrator access required');
+    const body = await readJson(req, 50 * 1024 * 1024);
+    if (body.confirm !== 'RESTORE BACKUP') return sendError(res, 400, 'Type RESTORE BACKUP to confirm');
+    const candidate = body.data?.data || body.data;
+    if (!candidate || typeof candidate !== 'object' || !Array.isArray(candidate.users) || !Array.isArray(candidate.classes)) return sendError(res, 400, 'This does not look like an EduSend backup');
+    const previous = db;
+    try {
+      db = migrateData(candidate);
+      db.storageMeta ||= {};
+      db.storageMeta.revision = Number(previous?.storageMeta?.revision || 0);
+      db.storageMeta.lastSavedAt = previous?.storageMeta?.lastSavedAt || null;
+      db.storageMeta.backend = STORAGE_BACKEND;
+      audit(user.id, 'BACKUP_RESTORED', `Backup restored into ${STORAGE_BACKEND}`);
+      const storage = await saveData();
+      return sendJson(res, 200, { ok:true, storage });
+    } catch (err) {
+      db = previous;
+      throw err;
+    }
   }
 
   if (req.method === 'GET' && pathname === '/api/admin/backup') {
@@ -1378,8 +1624,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`EduSend V${APP_VERSION} running on http://${HOST}:${PORT}`);
-  console.log(`Data directory: ${DATA_DIR}`);
-  if (TOKEN_SECRET.includes('DEV_ONLY')) console.warn('WARNING: Set TOKEN_SECRET before public deployment.');
+async function start() {
+  db = await loadData();
+  server.listen(PORT, HOST, () => {
+    console.log(`EduSend V${APP_VERSION} running on http://${HOST}:${PORT}`);
+    console.log(`Storage backend: ${STORAGE_BACKEND}`);
+    if (!DATABASE_URL) console.warn('WARNING: DATABASE_URL is not set. Local-file storage is for testing only and can be lost on redeploy.');
+    if (TOKEN_SECRET.includes('DEV_ONLY')) console.warn('WARNING: Set TOKEN_SECRET before public deployment.');
+  });
+}
+
+start().catch(err => {
+  console.error('EduSend failed to start:', err);
+  process.exit(1);
 });
