@@ -1,15 +1,12 @@
 {
   "name": "reportform-zm-school-results",
-  "version": "3.0.1",
+  "version": "2.9.0",
   "private": true,
-  "description": "Reportform ZM V3.0.1 production-storage build with PostgreSQL persistence and subject-teacher controlled result corrections.",
+  "description": "ReportForm ZM V2.9: simple teacher self-registration with administrator approval, followed by verified teaching-profile setup.",
   "scripts": {
     "start": "node server.js"
   },
   "engines": {
     "node": ">=18"
-  },
-  "dependencies": {
-    "pg": "^8.13.1"
   }
 }
