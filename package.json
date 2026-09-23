@@ -1,8 +1,8 @@
 {
   "name": "reportform-zm-school-results",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "private": true,
-  "description": "ReportForm ZM V2.8 realistic source-schedule training build: 10L and 11N, 10 staff, transcribed 2026 marks, pupil-level readiness and simple name/PIN login.",
+  "description": "ReportForm ZM V2.8.1 stable-refresh source-schedule training build: 10L and 11N, 10 staff, transcribed 2026 marks, pupil-level readiness and simple name/PIN login.",
   "scripts": {
     "start": "node server.js"
   },
