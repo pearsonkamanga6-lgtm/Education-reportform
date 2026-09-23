@@ -1,4 +1,4 @@
-const CACHE = 'edusend-shell-v3-0-0';
+const CACHE = 'edusend-shell-v3-0-1';
 const SHELL = [
   '/', '/index.html', '/styles.css', '/app.js', '/pwa.js',
   '/manifest.webmanifest', '/manifest.json', '/offline.html',
@@ -14,7 +14,7 @@ self.addEventListener('activate', event => {
     caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
       .then(() => self.clients.matchAll({ type:'window' }))
-      .then(clients => clients.forEach(c => c.postMessage({ type:'EDUSEND_UPDATED', version:'2.8.1' })))
+      .then(clients => clients.forEach(c => c.postMessage({ type:'EDUSEND_UPDATED', version:'3.0.1' })))
   );
 });
 

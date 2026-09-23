@@ -1,5 +1,5 @@
 (() => {
-  const APP_VERSION = '3.0.0';
+  const APP_VERSION = '3.0.1';
   const app = document.getElementById('app');
   const state = {
     token: localStorage.getItem('edusend_token') || '',
@@ -56,7 +56,7 @@
   }
 
   function snapshotActiveDraft() {
-    if (!state.activeSheet || ['SUBMITTED','LOCKED'].includes(state.activeSheet.sheet?.status)) return null;
+    if (!state.activeSheet || (['SUBMITTED','LOCKED'].includes(state.activeSheet.sheet?.status) && !state.activeSheet.correctionMode)) return null;
     const markEls = [...document.querySelectorAll('[data-mark]')];
     if (!markEls.length) return null;
     const rows = collectSheetRows();
@@ -147,7 +147,7 @@
     app.innerHTML = `
       <div class="login-page">
         <div class="login-card simple-login-card">
-          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V3.0</p></div></div>
+          <div class="brand"><div class="brand-mark">ES</div><div><h1>Reportform ZM</h1><p>Enter results once. Send reports to parents. — V3.0.1</p></div></div>
           <div class="login-hero"><b>Welcome</b><span>Enter your name or staff ID to continue.</span></div>
           <form id="loginForm" class="simple-login-form">
             <div class="field"><label>Your name or staff ID</label><input id="identifier" list="staffSuggestions" autocomplete="username" placeholder="e.g. Kamanga or kamanga" required><datalist id="staffSuggestions"></datalist></div>
@@ -215,7 +215,7 @@
     app.innerHTML = `
       <div class="shell">
         <aside class="sidebar">
-          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V3.0</div></div></div>
+          <div class="side-brand"><div class="brand-mark">ES</div><div><strong>EduSend</strong><div class="tiny">School Results V3.0.1</div></div></div>
           <div class="nav">${nav}</div>
           <div class="side-user"><div class="name">${esc(u.name)}</div><div>${roleNames().map(r=>`<span class="role-chip">${esc(r)}</span>`).join('')}</div><button id="logoutBtn" class="btn btn-secondary full" style="margin-top:12px">Sign out</button></div>
         </aside>
@@ -296,7 +296,7 @@
     if(isRole('HOD')) mainActions.push(actionTile('✓','Teaching Approvals','Approve teachers who claim subjects in your department.','hodClaims'),actionTile('◫','Results Status','See submitted and missing department results.','hodProgress'));
     if(isAdminOrHeadFront()) mainActions.push(actionTile('◉','School Results','See school-wide submission progress.','schoolProgress'),actionTile('✓','Approval Requests','Approve incomplete report release and class-teacher claims.','approvals'));
     content.innerHTML = `
-      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V3.0</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
+      <section class="hero-card simple-hero"><div><span class="eyebrow">REPORTFORM ZM • EDUSEND V3.0.1</span><h1>Welcome, ${esc(firstName)}</h1><p>Your main job is simple: enter results once, prepare the report, send it to the parent.</p></div><div class="hero-orb">ES</div></section>
       ${isRole('TEACHER')?deadlineBanner(rem.reminders):''}
       <div class="simple-summary">
         ${isRole('TEACHER')?`<div><b>${submitted}/${sheets.length||0}</b><span>result sheets submitted</span></div>`:''}
@@ -359,14 +359,18 @@
           <h3>${esc(a.subjectName)}</h3><p>${esc(s.assessment.name)}</p>
           <div class="mini-metrics"><span><b>${s.entered}</b> entered</span><span><b>${s.pupilCount}</b> pupils</span></div>
           <div class="deadline-row"><span>${esc(s.deadline.text)}</span><span>${fmtDate(s.deadline.dueAt)}</span></div>
-          <button class="btn ${['SUBMITTED','LOCKED'].includes(s.status)?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${['SUBMITTED','LOCKED'].includes(s.status)?'View sheet':'Open & enter results'}</button>
+          <button class="btn ${s.status==='LOCKED'?'btn-secondary':s.status==='SUBMITTED'?'btn-secondary':'btn-primary'} full" data-open-sheet="${a.id}" data-assessment="${s.assessment.id}">${s.status==='LOCKED'?'View locked sheet':s.status==='SUBMITTED'?'View / correct results':s.status==='CORRECTION_REQUESTED'?'Open correction request':'Open & enter results'}</button>
         </article>`).join('')}</div>` : '<div class="empty">No class/subject has been assigned to you yet.</div>'}`;
     content.querySelectorAll('[data-open-sheet]').forEach(b => b.onclick = () => openResultSheet(b.dataset.openSheet, b.dataset.assessment));
   }
 
-  async function openResultSheet(assignmentId, assessmentId) {
+  async function openResultSheet(assignmentId, assessmentId, correctionMode=false) {
     const d = await api(`/api/teacher/sheet?assignmentId=${encodeURIComponent(assignmentId)}&assessmentId=${encodeURIComponent(assessmentId)}`);
-    const readOnly = ['SUBMITTED','LOCKED'].includes(d.sheet.status);
+    const locked = d.sheet.status === 'LOCKED';
+    const submitted = ['SUBMITTED','CORRECTION_REQUESTED'].includes(d.sheet.status);
+    const effectiveCorrection = !locked && (correctionMode || d.sheet.status === 'CORRECTION_REQUESTED');
+    const readOnly = locked || (submitted && !effectiveCorrection);
+    d.correctionMode = effectiveCorrection;
     let recovered=false, recoveredAt='';
     if(!readOnly){const local=readLocalDraft(assignmentId,assessmentId);const localTime=Date.parse(local?.savedAt||'');const serverTime=Date.parse(d.sheet.updatedAt||'')||0;if(local?.rows?.length&&Number.isFinite(localTime)&&localTime>serverTime){const lm={},ls={},ln={};for(const row of local.rows){if(row.mark!==null&&row.mark!==''&&row.mark!==undefined)lm[row.pupilId]=Number(row.mark);ls[row.pupilId]=row.state||'PENDING';if(row.note)ln[row.pupilId]=row.note;}d.sheet.marks=lm;d.sheet.markStates=ls;d.sheet.markNotes=ln;recovered=true;recoveredAt=local.savedAt;}}
     state.activeSheet=d;
@@ -376,20 +380,36 @@
       let reason=''; if(st==='ABSENT') reason='ABSENT'; else if(st==='PENDING'&&note) reason=note.toUpperCase().includes('PAPER')?'PAPER_MISSING':note.toUpperCase().includes('DID NOT')?'DID_NOT_WRITE':'PENDING';
       return `<tr><td>${i+1}</td><td><b>${esc(p.name)}</b>${p.isRepeater?'<span class="repeater-tag">Repeater</span>':''}<div class="tiny muted">${esc(p.examNo||'')}</div></td><td class="center"><input class="mark-input" data-mark="${p.id}" type="number" inputmode="decimal" min="0" max="100" step="0.1" value="${esc(mark)}" ${readOnly?'disabled':''}></td><td><select class="reason-select" data-reason="${p.id}" ${readOnly?'disabled':''}><option value="" ${!reason?'selected':''}>No special reason</option><option value="ABSENT" ${reason==='ABSENT'?'selected':''}>Absent</option><option value="DID_NOT_WRITE" ${reason==='DID_NOT_WRITE'?'selected':''}>Did not write</option><option value="PAPER_MISSING" ${reason==='PAPER_MISSING'?'selected':''}>Paper missing</option><option value="PENDING" ${reason==='PENDING'?'selected':''}>Mark pending</option></select></td></tr>`;
     }).join('');
+    const info = locked
+      ? '<div class="alert alert-orange"><b>Locked by administration.</b> You can view the results but cannot change them until the sheet is unlocked.</div>'
+      : effectiveCorrection
+        ? `<div class="alert alert-orange"><b>${d.sheet.status==='CORRECTION_REQUESTED'?'Correction requested.':'Correction mode.'}</b> Change only the wrong result. Your class teacher and administration will be notified.</div>`
+        : submitted
+          ? '<div class="alert alert-green"><b>Submitted.</b> These are your subject results. If you notice a mistake, use <b>Correct a Mistake</b>.</div>'
+          : '<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>';
     showModal(`<div class="modal-head"><div><b>${esc(d.assignment.className)} — ${esc(d.assignment.subjectName)}</b><div class="tiny muted">${esc(d.assessment.name)} • ${esc(d.sheet.deadline.text)}</div></div><button class="close" data-close>×</button></div>
-      <div class="modal-body"><div class="workflow-strip"><span>1. Type marks</span><span>2. Give a reason only where a mark is missing</span><span>3. Submit</span></div>
-      ${readOnly?'<div class="alert alert-green"><b>Submitted.</b> This sheet is now read-only unless a correction is requested.</div>':'<div class="alert alert-blue"><b>Autosave is on.</b> You do not need a Save Draft button.</div>'}
-      ${recovered?`<div class="alert alert-orange"><b>Recovered draft.</b> Newer work from this device was restored (${fmtDate(recoveredAt)}).</div>`:''}
-      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${readOnly?'Submitted '+fmtDate(d.sheet.submittedAt):d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
-      <div class="table-wrap"><table class="table result-entry simple-entry"><thead><tr><th>#</th><th>Pupil</th><th class="center">Mark %</th><th>If no mark</th></tr></thead><tbody>${rows}</tbody></table></div></div>
-      <div class="modal-foot"><button class="btn btn-secondary" data-close>Close</button>${readOnly?'':`${state.me?.school?.demoMode?'<button type="button" id="fillDemoMarks" class="btn btn-gold">Fill demo marks</button>':''}<button type="button" id="submitResults" class="btn btn-green btn-lg">Submit Results</button>`}</div>`);
+      <div class="modal-body"><div class="workflow-strip"><span>1. Type marks</span><span>2. Give a reason only where a mark is missing</span><span>3. ${effectiveCorrection?'Save correction':'Submit'}</span></div>
+      ${info}
+      ${recovered?`<div class="alert alert-orange"><b>Recovered work.</b> Newer work from this device was restored (${fmtDate(recoveredAt)}).</div>`:''}
+      <div id="autosaveStatus" class="save-state ${readOnly?'saved':''}">${readOnly?(locked?'Locked':'Submitted '+fmtDate(d.sheet.submittedAt)):effectiveCorrection?'Correction not saved yet':d.sheet.updatedAt?'✓ Saved • '+fmtDate(d.sheet.updatedAt):'Ready — changes save automatically'}</div>
+      <div class="table-wrap"><table class="table result-entry simple-entry"><thead><tr><th>#</th><th>Pupil</th><th class="center">Mark %</th><th>If no mark</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${effectiveCorrection?'<div class="field correction-reason"><label>Reason for correction</label><input id="correctionReason" maxlength="300" placeholder="Example: Entered 48 instead of 84 for one pupil"></div>':''}</div>
+      <div class="modal-foot"><button class="btn btn-secondary" data-close>${effectiveCorrection?'Cancel':'Close'}</button>${locked?'':submitted&&!effectiveCorrection?'<button type="button" id="startCorrection" class="btn btn-primary">Correct a Mistake</button>':effectiveCorrection?'<button type="button" id="saveCorrection" class="btn btn-green btn-lg">Save Correction</button>':`${state.me?.school?.demoMode?'<button type="button" id="fillDemoMarks" class="btn btn-gold">Fill demo marks</button>':''}<button type="button" id="submitResults" class="btn btn-green btn-lg">Submit Results</button>`}</div>`);
+    if(submitted&&!effectiveCorrection&&!locked){byId('startCorrection').onclick=()=>openResultSheet(assignmentId,assessmentId,true);return;}
     if(!readOnly){
-      const changed=()=>{snapshotActiveDraft();scheduleAutosave();};
+      const changed=()=>{
+        snapshotActiveDraft();
+        if(effectiveCorrection){const st=byId('autosaveStatus');if(st){st.textContent='Correction not saved yet';st.className='save-state local-only';}}
+        else scheduleAutosave();
+      };
       document.querySelectorAll('[data-mark],[data-reason]').forEach(el=>{el.addEventListener('input',changed);el.addEventListener('change',changed)});
       document.querySelectorAll('[data-mark]').forEach(el=>el.addEventListener('input',()=>{if(el.value!==''){const r=document.querySelector(`[data-reason="${el.dataset.mark}"]`);if(r)r.value='';}}));
-      if(byId('fillDemoMarks'))byId('fillDemoMarks').onclick=fillPracticeMarks;
-      byId('submitResults').onclick=()=>saveActiveSheet('submit',false);
-      if(recovered)setTimeout(()=>saveActiveSheet('draft',true),150);
+      if(effectiveCorrection){byId('saveCorrection').onclick=()=>saveActiveSheet('correct',false);}
+      else{
+        if(byId('fillDemoMarks'))byId('fillDemoMarks').onclick=fillPracticeMarks;
+        byId('submitResults').onclick=()=>saveActiveSheet('submit',false);
+        if(recovered)setTimeout(()=>saveActiveSheet('draft',true),150);
+      }
     }
   }
 
@@ -416,17 +436,30 @@
 
   async function saveActiveSheet(action,silent) {
     if(!state.activeSheet)return; clearTimeout(state.autosaveTimer); const current=state.activeSheet; const rows=collectSheetRows(); storeLocalDraft(rows);
-    if(action==='submit'){
+    let correctionReason='';
+    if(action==='submit'||action==='correct'){
       const unexplained=rows.filter(r=>r.mark===null&&!r.note); if(unexplained.length){actionPopup('Missing information',`${unexplained.length} pupil${unexplained.length===1?' has':'s have'} no mark and no reason. Enter a mark or choose a reason first.`,'error');return;}
+    }
+    if(action==='submit'){
       if(!confirm(`Submit ${current.assignment.subjectName} results for ${current.assignment.className}? The class teacher and administration will see them immediately.`))return;
     }
-    const submitBtn=byId('submitResults');if(submitBtn)submitBtn.disabled=true;const st=byId('autosaveStatus');if(st){st.textContent=action==='submit'?'Submitting results…':'Saving…';st.className='save-state syncing';}
+    if(action==='correct'){
+      correctionReason=String(byId('correctionReason')?.value||'').trim();
+      if(correctionReason.length<3){actionPopup('Reason required','Briefly state why you are correcting the submitted results.','error');byId('correctionReason')?.focus();return;}
+      if(!confirm(`Save this correction to ${current.assignment.subjectName}? The class teacher and administration will be notified.`))return;
+    }
+    const submitBtn=action==='correct'?byId('saveCorrection'):byId('submitResults');if(submitBtn)submitBtn.disabled=true;const st=byId('autosaveStatus');if(st){st.textContent=action==='submit'?'Submitting results…':action==='correct'?'Saving correction…':'Saving…';st.className='save-state syncing';}
     try{
-      const result=await api('/api/teacher/sheet',{method:'PUT',body:{assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,expectedRevision:current.sheet.revision}});
-      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status; storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'});
-      if(st){st.textContent=action==='submit'?'✓ Submitted successfully':`✓ Saved ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;st.className='save-state saved';}
-      if(action==='submit'){const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);await navigate('teacher');}
-    }catch(err){if(st){st.textContent=`Not synced — ${err.message}`;st.className='save-state local-only';}if(err.message.includes('newer version'))actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');else if(!silent)actionPopup('Could not save to server',`Your latest typing is still kept on this device. ${err.message}`,'error');}
+      const result=await api('/api/teacher/sheet',{method:'PUT',body:{assignmentId:current.assignment.id,assessmentId:current.assessment.id,rows,action,correctionReason,expectedRevision:current.sheet.revision}});
+      current.sheet.revision=result.revision; current.sheet.updatedAt=result.updatedAt; current.sheet.status=result.status; storeLocalDraft(rows,{serverSavedAt:result.updatedAt,submittedCopy:action==='submit'||action==='correct'});
+      if(st){st.textContent=action==='submit'?'✓ Submitted successfully':action==='correct'?'✓ Correction saved':`✓ Saved ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`;st.className='save-state saved';}
+      if(action==='submit'){
+        const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const who=result.classTeacherName?`${result.classTeacherName} can now see the results.`:'Administration was notified; no class teacher is assigned yet.';actionPopup('Results submitted',`${result.subjectName} • ${result.className}. ${who}`);await navigate('teacher');
+      }
+      if(action==='correct'){
+        const assignmentId=current.assignment.id,assessmentId=current.assessment.id;removeLocalDraft(assignmentId,assessmentId);closeModal(true);const c=result.correction||{};const resend=c.affectedSentReports?` ${c.affectedSentReports} affected pupil report${c.affectedSentReports===1?' was':'s were'} already sent/shared; the class teacher has been warned that a corrected report may need to be resent.`:'';actionPopup('Correction saved',`${c.changedCount||1} result${(c.changedCount||1)===1?'':'s'} corrected. The class teacher and administration were notified.${resend}`);await navigate('teacher');
+      }
+    }catch(err){if(st){st.textContent=`Not synced — ${err.message}`;st.className='save-state local-only';}if(err.message.includes('newer version'))actionPopup('Newer copy found','This result sheet was changed on another device. Close it and reopen before continuing.','error');else if(!silent)actionPopup(action==='correct'?'Could not save correction':'Could not save to server',`Your latest typing is still kept on this device. ${err.message}`,'error');}
     finally{if(submitBtn)submitBtn.disabled=false;}
   }
 
