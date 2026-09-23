@@ -6,7 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { URL } = require('url');
 
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.0.1';
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const DATA_DIR = process.env.EDUSEND_DATA_DIR || path.join(ROOT, 'data');
@@ -1106,7 +1106,18 @@ async function api(req, res, urlObj) {
     if (!assessmentAppliesToClass(assessment, assignment.classId)) return sendError(res, 403, 'This assessment is not assigned to this class');
     const sheet = ensureSheet(assignment, assessment.id, user.id);
     if (sheet.status === 'LOCKED') return sendError(res, 409, 'This result sheet has been locked by administration');
-    if (sheet.status === 'SUBMITTED' && body.action !== 'submit') return sendError(res, 409, 'This sheet has already been submitted. A correction request is required before editing.');
+    const requestedAction = String(body.action || 'draft').toLowerCase();
+    const correctionMode = requestedAction === 'correct' || (sheet.status === 'CORRECTION_REQUESTED' && requestedAction === 'submit');
+    if (sheet.status === 'SUBMITTED' && !correctionMode) return sendError(res, 409, 'This sheet is already submitted. Use Correct a Mistake to change your own subject results.');
+    if (sheet.status === 'CORRECTION_REQUESTED' && !correctionMode) return sendError(res, 409, 'A correction is pending. Open the sheet and save the correction.');
+    if (requestedAction === 'correct' && !['SUBMITTED','CORRECTION_REQUESTED'].includes(sheet.status)) return sendError(res, 409, 'Corrections are only used after a result sheet has been submitted.');
+    const previous = {
+      status: sheet.status,
+      marks: { ...(sheet.marks || {}) },
+      markStates: { ...(sheet.markStates || {}) },
+      markNotes: { ...(sheet.markNotes || {}) },
+      submittedAt: sheet.submittedAt || null
+    };
     const expectedRevision = body.expectedRevision;
     if (expectedRevision !== undefined && expectedRevision !== null && Number(expectedRevision) !== Number(sheet.revision || 0)) {
       return sendError(res, 409, `A newer version of this result sheet exists (server revision ${sheet.revision || 0}). Reopen the sheet before saving.`);
@@ -1136,20 +1147,54 @@ async function api(req, res, urlObj) {
       if (note) markNotes[p.id] = note;
     }
 
-    sheet.marks = marks; sheet.markStates = markStates; sheet.markNotes = markNotes; sheet.updatedAt = nowIso(); sheet.enteredByUserId = user.id;
-    const action = body.action === 'submit' ? 'submit' : 'draft';
-    if (action === 'submit') {
-      const pending = classPupils.filter(p => pupilTakesSubject(p, assignment.subjectId) && (markStates[p.id] || 'PENDING') === 'PENDING' && !String(markNotes[p.id] || '').trim());
-      if (pending.length) return sendError(res, 400, `${pending.length} pupil${pending.length === 1 ? '' : 's'} still have a missing result with no explanation. Enter a mark or choose a reason first.`);
-      sheet.status = 'SUBMITTED'; sheet.submittedAt = nowIso();
-      audit(user.id, 'RESULTS_SUBMITTED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
+    const action = correctionMode ? 'correct' : requestedAction === 'submit' ? 'submit' : 'draft';
+    const pending = classPupils.filter(p => pupilTakesSubject(p, assignment.subjectId) && (markStates[p.id] || 'PENDING') === 'PENDING' && !String(markNotes[p.id] || '').trim());
+    if ((action === 'submit' || action === 'correct') && pending.length) return sendError(res, 400, `${pending.length} pupil${pending.length === 1 ? '' : 's'} still have a missing result with no explanation. Enter a mark or choose a reason first.`);
+
+    let correctionInfo = null;
+    if (action === 'correct') {
+      let correctionReason = String(body.correctionReason || '').trim().slice(0, 300);
+      if (!correctionReason && previous.status === 'CORRECTION_REQUESTED') correctionReason = 'Correction requested by class teacher';
+      if (correctionReason.length < 3) return sendError(res, 400, 'Give a short reason for the correction.');
+      const changes = [];
+      for (const p of classPupils) {
+        if (!pupilTakesSubject(p, assignment.subjectId)) continue;
+        const oldMark = Object.prototype.hasOwnProperty.call(previous.marks, p.id) ? previous.marks[p.id] : null;
+        const newMark = Object.prototype.hasOwnProperty.call(marks, p.id) ? marks[p.id] : null;
+        const oldState = previous.markStates[p.id] || (oldMark !== null ? 'PRESENT' : 'PENDING');
+        const newState = markStates[p.id] || (newMark !== null ? 'PRESENT' : 'PENDING');
+        const oldNote = previous.markNotes[p.id] || '';
+        const newNote = markNotes[p.id] || '';
+        if (oldMark !== newMark || oldState !== newState || oldNote !== newNote) changes.push({ pupilId:p.id, pupilName:p.name, oldMark, newMark, oldState, newState, oldNote, newNote });
+      }
+      if (!changes.length) return sendError(res, 400, 'No result changes were detected.');
+      sheet.marks = marks; sheet.markStates = markStates; sheet.markNotes = markNotes; sheet.updatedAt = nowIso(); sheet.enteredByUserId = user.id;
+      sheet.status = 'SUBMITTED'; sheet.submittedAt = nowIso(); sheet.correctedAt = sheet.updatedAt;
+      sheet.corrections ||= [];
+      const correction = { id:id('corr'), at:sheet.correctedAt, byUserId:user.id, reason:correctionReason, previousSubmittedAt:previous.submittedAt, changes };
+      sheet.corrections.unshift(correction); sheet.corrections = sheet.corrections.slice(0, 100);
+      const affectedPupilIds = new Set(changes.map(x=>x.pupilId));
+      const affectedSentPupilIds = new Set(db.reportSendLog.filter(x => x.classId === assignment.classId && x.assessmentId === assessment.id && affectedPupilIds.has(x.pupilId) && ['SHARED','CONFIRMED_SENT'].includes(String(x.stage||'').toUpperCase())).map(x=>x.pupilId));
       const cls = db.classes.find(c => c.id === assignment.classId); const subject = db.subjects.find(s => s.id === assignment.subjectId);
       const dept = db.departments.find(d => d.id === subject?.departmentId);
       const recipients = [...new Set([cls?.classTeacherUserId, dept?.hodUserId, ...db.users.filter(u => hasRole(u, 'ADMIN') || hasRole(u,'HEAD')).map(u => u.id)].filter(Boolean))];
-      createNotification(recipients, 'RESULTS_SUBMITTED', `${subject?.name || 'Subject'} results received`, `${user.name} submitted ${subject?.name || 'subject'} results for ${cls?.name || 'class'} (${classPupils.filter(p=>pupilTakesSubject(p,assignment.subjectId)).length} pupils taking the subject).`, { classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id });
+      const resendText = affectedSentPupilIds.size ? ` ${affectedSentPupilIds.size} affected pupil report${affectedSentPupilIds.size===1?' has':'s have'} already been shared/sent and may need to be resent.` : '';
+      createNotification(recipients, 'RESULTS_CORRECTED', `${subject?.name || 'Subject'} results corrected`, `${user.name} corrected ${changes.length} result${changes.length===1?'':'s'} for ${cls?.name || 'class'}. Reason: ${correctionReason}.${resendText}`, { classId:assignment.classId, subjectId:assignment.subjectId, assessmentId:assessment.id, assignmentId:assignment.id, changedPupilIds:[...affectedPupilIds], affectedSentReports:affectedSentPupilIds.size });
+      audit(user.id, 'RESULTS_CORRECTED', `${assignment.classId}/${assignment.subjectId}/${assessment.id} • ${changes.length} change(s) • ${correctionReason}`);
+      correctionInfo = { changedCount:changes.length, affectedSentReports:affectedSentPupilIds.size, reason:correctionReason };
     } else {
-      sheet.status = Object.keys(marks).length || Object.values(markStates).some(s => !['PENDING','NOT_TAKING'].includes(s)) ? 'DRAFT' : 'NOT_STARTED';
-      audit(user.id, 'RESULTS_DRAFT_AUTOSAVED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
+      sheet.marks = marks; sheet.markStates = markStates; sheet.markNotes = markNotes; sheet.updatedAt = nowIso(); sheet.enteredByUserId = user.id;
+      if (action === 'submit') {
+        sheet.status = 'SUBMITTED'; sheet.submittedAt = nowIso();
+        audit(user.id, 'RESULTS_SUBMITTED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
+        const cls = db.classes.find(c => c.id === assignment.classId); const subject = db.subjects.find(s => s.id === assignment.subjectId);
+        const dept = db.departments.find(d => d.id === subject?.departmentId);
+        const recipients = [...new Set([cls?.classTeacherUserId, dept?.hodUserId, ...db.users.filter(u => hasRole(u, 'ADMIN') || hasRole(u,'HEAD')).map(u => u.id)].filter(Boolean))];
+        createNotification(recipients, 'RESULTS_SUBMITTED', `${subject?.name || 'Subject'} results received`, `${user.name} submitted ${subject?.name || 'subject'} results for ${cls?.name || 'class'} (${classPupils.filter(p=>pupilTakesSubject(p,assignment.subjectId)).length} pupils taking the subject).`, { classId: assignment.classId, subjectId: assignment.subjectId, assessmentId: assessment.id, assignmentId: assignment.id });
+      } else {
+        sheet.status = Object.keys(marks).length || Object.values(markStates).some(s => !['PENDING','NOT_TAKING'].includes(s)) ? 'DRAFT' : 'NOT_STARTED';
+        audit(user.id, 'RESULTS_DRAFT_AUTOSAVED', `${assignment.classId}/${assignment.subjectId}/${assessment.id}`);
+      }
     }
     sheet.revision = Number(sheet.revision || 0) + 1;
     const storage = await saveData();
@@ -1161,6 +1206,7 @@ async function api(req, res, urlObj) {
       ok:true, status:sheet.status, revision:sheet.revision, updatedAt:sheet.updatedAt, submittedAt:sheet.submittedAt,
       className:cls?.name || '', subjectName:subject?.name || '',
       classTeacherName:classTeacher?.name || '', classTeacherAssigned:!!classTeacher,
+      correction: correctionInfo,
       storageRevision:storage.revision, storageSavedAt:storage.lastSavedAt
     });
   }
